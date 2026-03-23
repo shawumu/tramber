@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022"],
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tramber/shared": ["./packages/shared/src"],
+      "@tramber/shared/*": ["./packages/shared/src/*"],
+      "@tramber/core": ["./packages/core/src"],
+      "@tramber/core/*": ["./packages/core/src/*"],
+      "@tramber/scene": ["./packages/scene/src"],
+      "@tramber/scene/*": ["./packages/scene/src/*"],
+      "@tramber/skill": ["./packages/skill/src"],
+      "@tramber/skill/*": ["./packages/skill/src/*"],
+      "@tramber/routine": ["./packages/routine/src"],
+      "@tramber/routine/*": ["./packages/routine/src/*"],
+      "@tramber/tool": ["./packages/tool/src"],
+      "@tramber/tool/*": ["./packages/tool/src/*"],
+      "@tramber/experience": ["./packages/experience/src"],
+      "@tramber/experience/*": ["./packages/experience/src/*"],
+      "@tramber/provider": ["./packages/provider/src"],
+      "@tramber/provider/*": ["./packages/provider/src/*"],
+      "@tramber/sdk": ["./packages/sdk/src"],
+      "@tramber/sdk/*": ["./packages/sdk/src/*"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "**/*.dist.ts", "**/node_modules"]
+}

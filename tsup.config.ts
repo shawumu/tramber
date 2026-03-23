@@ -1,0 +1,14 @@
+// tsup.config.ts
+import { defineConfig } from 'tsup';
+
+export default defineConfig({
+  entry: ['src/index.ts'],
+  format: ['esm'],
+  dts: true,
+  clean: true,
+  sourcemap: true,
+  target: 'es2022',
+  minify: false,
+  splitting: false,
+  external: ['@tramber/*']
+});

@@ -1,0 +1,47 @@
+{
+  "name": "tramber",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Knowledge-preserving multi-scene AI agent with Scene/Workflow/Skill/Routine/Tool hierarchy",
+  "author": "Tramber Contributors",
+  "license": "MIT",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/**' build",
+    "dev": "pnpm --filter './packages/client/web' dev",
+    "cli": "pnpm --filter './packages/client/cli' start",
+    "serve": "pnpm --filter './packages/server' start",
+    "typecheck": "pnpm -r --filter './packages/**' typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "clean": "pnpm -r clean",
+    "test": "vitest",
+    "preinstall": "npx only-allow pnpm"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "@vitejs/plugin-vue": "^5.0.3",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.4",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "vitest": "^1.2.1",
+    "vue": "^3.4.19"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "coding",
+    "claude",
+    "anthropic",
+    "vue",
+    "vite"
+  ]
+}

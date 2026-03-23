@@ -1,0 +1,33 @@
+{
+  "$schema": "https://tramber.dev/schema/settings.json",
+  "server": {
+    "host": "localhost",
+    "port": 3000
+  },
+  "apiKey": "${ANTHROPIC_API_KEY}",
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-3-5-sonnet-20241022",
+  "scenes": {
+    "default": "coding",
+    "available": ["coding"]
+  },
+  "routine": {
+    "autoCreate": true,
+    "minSuccessRate": 0.8,
+    "minExecutions": 3,
+    "minSuccessCount": 3
+  },
+  "plugins": {
+    "builtin": [],
+    "community": []
+  },
+  "checkpoint": {
+    "enabled": false,
+    "maxSnapshots": 100
+  },
+  "experience": {
+    "storage": "file",
+    "retentionDays": 30,
+    "autoRecord": true
+  }
+}
