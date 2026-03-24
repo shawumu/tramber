@@ -10,6 +10,9 @@ export interface Skill {
   name: string;
   description: string;
   tools: string[];
+  sceneId?: string;
+  category?: string;
+  prerequisites?: string[];
   execute(input: SkillInput, context: SkillContext): Promise<SkillOutput>;
 }
 
@@ -21,9 +24,17 @@ export interface SkillOutput {
   success: boolean;
   result?: unknown;
   error?: string;
+  steps?: unknown[];
 }
 
 export interface SkillContext {
   experiences: Experience[];
   queryExperience(query: string): Promise<Experience[]>;
+}
+
+export interface SkillExecutionResult {
+  success: boolean;
+  output?: unknown;
+  steps?: unknown[];
+  error?: string;
 }

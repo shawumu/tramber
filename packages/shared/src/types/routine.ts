@@ -31,6 +31,7 @@ export interface RoutineCondition {
 export interface RoutineStats {
   totalExecutions: number;
   successCount: number;
+  failureCount: number;
   successRate: number;
 }
 

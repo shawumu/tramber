@@ -5,3 +5,4 @@
 
 export * from './scene-manager.js';
 export * from './skill-registry.js';
+export * from './coding.js';

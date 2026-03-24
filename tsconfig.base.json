@@ -29,6 +29,8 @@
       "@tramber/experience/*": ["./packages/experience/src/*"],
       "@tramber/provider": ["./packages/provider/src"],
       "@tramber/provider/*": ["./packages/provider/src/*"],
+      "@tramber/agent": ["./packages/agent/src"],
+      "@tramber/agent/*": ["./packages/agent/src/*"],
       "@tramber/sdk": ["./packages/sdk/src"],
       "@tramber/sdk/*": ["./packages/sdk/src/*"]
     }

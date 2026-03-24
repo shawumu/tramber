@@ -1,5 +1,5 @@
 {
-  "name": "@tramber/scene",
+  "name": "@tramber/experience",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,10 +21,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@tramber/shared": "workspace:*",
-    "@tramber/tool": "workspace:*",
-    "@tramber/agent": "workspace:*",
-    "@tramber/provider": "workspace:*"
+    "@tramber/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.11.16",

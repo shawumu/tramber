@@ -1,12 +1,17 @@
 {
   "$schema": "https://tramber.dev/schema/settings.json",
+  "apiKey": "${ANTHROPIC_AUTH_TOKEN}",
+  "baseURL": "${ANTHROPIC_BASE_URL}",
+  "model": "${ANTHROPIC_MODEL:glm-4.7}",
+  "provider": "anthropic",
+  "scene": "coding",
+  "maxIterations": 10,
+  "enableExperience": true,
+  "enableRoutine": true,
   "server": {
     "host": "localhost",
     "port": 3000
   },
-  "apiKey": "${ANTHROPIC_API_KEY}",
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-3-5-sonnet-20241022",
   "scenes": {
     "default": "coding",
     "available": ["coding"]

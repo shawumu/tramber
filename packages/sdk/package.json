@@ -1,5 +1,5 @@
 {
-  "name": "@tramber/scene",
+  "name": "@tramber/sdk",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,8 +23,11 @@
   "dependencies": {
     "@tramber/shared": "workspace:*",
     "@tramber/tool": "workspace:*",
+    "@tramber/provider": "workspace:*",
     "@tramber/agent": "workspace:*",
-    "@tramber/provider": "workspace:*"
+    "@tramber/scene": "workspace:*",
+    "@tramber/routine": "workspace:*",
+    "@tramber/experience": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.11.16",

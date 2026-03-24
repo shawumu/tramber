@@ -6,7 +6,7 @@
  */
 
 import type { Scene, Workflow, SceneCategory, Task } from '@tramber/shared';
-import type { AgentLoop, AgentLoopOptions } from '@tramber/agent';
+import type { AgentLoop, AgentLoopOptions, AgentLoopStep } from '@tramber/agent';
 import type { ToolRegistry } from '@tramber/tool';
 
 export interface SceneExecutionContext {
@@ -18,7 +18,7 @@ export interface SceneExecutionContext {
 export interface SceneExecutionResult {
   success: boolean;
   output?: unknown;
-  steps: AgentLoopOptions['onStep'];
+  steps: AgentLoopStep[];
   error?: string;
 }
 
@@ -63,12 +63,8 @@ export class SceneManager {
     return this.workflows.get(workflowId);
   }
 
-  listWorkflows(sceneId?: string): Workflow[] {
-    const workflows = Array.from(this.workflows.values());
-    if (sceneId) {
-      return workflows.filter(w => w.sceneId === sceneId);
-    }
-    return workflows;
+  listWorkflows(): Workflow[] {
+    return Array.from(this.workflows.values());
   }
 
   async executeScene(context: SceneExecutionContext): Promise<SceneExecutionResult> {
@@ -76,6 +72,7 @@ export class SceneManager {
     if (!scene) {
       return {
         success: false,
+        steps: [],
         error: `Scene ${context.sceneId} not found`
       };
     }
@@ -94,7 +91,9 @@ export class SceneManager {
       id: `agent-${scene.id}`,
       name: `${scene.name} Agent`,
       description: scene.description,
-      sceneId: scene.id
+      sceneId: scene.id,
+      temperature: 0.7,
+      maxTokens: 4096
     };
 
     // 创建 Agent Loop
@@ -117,6 +116,7 @@ export class SceneManager {
     } catch (error) {
       return {
         success: false,
+        steps: [],
         error: error instanceof Error ? error.message : String(error)
       };
     }
