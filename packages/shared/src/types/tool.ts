@@ -3,6 +3,8 @@
  * Tool 相关类型定义
  */
 
+import type { PermissionDeclaration } from './permission.js';
+
 export type ToolCategory = 'file' | 'search' | 'execution' | 'media' | 'git' | 'lsp';
 
 export interface Tool {
@@ -11,6 +13,8 @@ export interface Tool {
   description: string;
   category: ToolCategory;
   inputSchema: ToolInputSchema;
+  /** 权限声明 */
+  permissions?: PermissionDeclaration;
   execute(input: unknown): Promise<ToolResult>;
 }
 

@@ -12,6 +12,7 @@ import { AgentLoop, type AgentLoopStep } from '@tramber/agent';
 import { SceneManager, SkillRegistry, CODING_SCENE_CONFIG, getCodingSkills } from '@tramber/scene';
 import { RoutineManager, RoutineSolidifier } from '@tramber/routine';
 import { ExperienceStorage, ExperienceRetriever, ExperienceManager } from '@tramber/experience';
+import { ConfigLoader, PermissionChecker } from '@tramber/permission';
 import { join } from 'path';
 import type { Task, Scene, Skill, Routine, Experience } from '@tramber/shared';
 import type {
@@ -28,6 +29,8 @@ import type {
 export class TramberClient {
   private toolRegistry: ToolRegistryImpl;
   private provider: AnthropicProvider | null = null;
+  private configLoader: ConfigLoader;
+  private permissionChecker: PermissionChecker;
   private sceneManager: SceneManager;
   private skillRegistry: SkillRegistry;
   private routineManager: RoutineManager;
@@ -44,6 +47,7 @@ export class TramberClient {
     enableRoutine: boolean;
   };
   private isInitialized = false;
+  private permissionConfigLoaded = false;
 
   constructor(options: TramberClientOptions = {}) {
     const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? '';
@@ -61,8 +65,32 @@ export class TramberClient {
       enableRoutine: options.enableRoutine ?? true
     };
 
+    // 初始化 Config Loader (使用 workspacePath 作为项目根目录)
+    this.configLoader = new ConfigLoader(this.options.workspacePath);
+
+    // 初始化 Permission Checker (先使用默认配置，稍后会在 initialize 中加载实际配置)
+    this.permissionChecker = new PermissionChecker({
+      toolPermissions: {
+        file_read: true,
+        file_write: 'confirm',
+        file_delete: false,
+        file_rename: 'confirm',
+        command_execute: ['npm', 'git', 'ls', 'cat'],
+        command_dangerous: 'deny'
+      },
+      sandbox: {
+        enabled: true,
+        allowedPaths: ['./'],
+        deniedPaths: [],
+        deniedPatterns: [],
+        maxFileSize: 10485760,
+        maxExecutionTime: 30000
+      }
+    });
+
     // 初始化 Tool Registry
     this.toolRegistry = new ToolRegistryImpl();
+
     this.toolRegistry.register(readFileTool);
     this.toolRegistry.register(writeFileTool);
     this.toolRegistry.register(editFileTool);
@@ -124,6 +152,17 @@ export class TramberClient {
   async initialize(): Promise<void> {
     if (this.isInitialized) {
       return;
+    }
+
+    // 加载权限配置
+    if (!this.permissionConfigLoaded) {
+      try {
+        const permissionConfig = await this.configLoader.load();
+        this.permissionChecker = new PermissionChecker(permissionConfig);
+        this.permissionConfigLoaded = true;
+      } catch {
+        // 保持默认配置
+      }
     }
 
     // 加载经验数据
@@ -210,15 +249,36 @@ export class TramberClient {
         },
         provider: this.provider!,
         toolRegistry: this.toolRegistry,
+        permissionChecker: this.permissionChecker,
         maxIterations: options.maxIterations ?? 10,
+        onPermissionRequired: options.onPermissionRequired,
         onStep: (step: AgentLoopStep) => {
-          onProgress({
-            type: 'step',
-            iteration: step.iteration,
-            content: step.thinking ?? step.content,
-            toolCall: step.toolCall ? { name: step.toolCall.name, parameters: step.toolCall.parameters } : undefined,
-            toolResult: step.toolResult ? { success: step.toolResult.success, data: step.toolResult.data, error: step.toolResult.error } : undefined
-          });
+          // 发送工具调用进度
+          if (step.toolCall) {
+            onProgress({
+              type: 'tool_call',
+              iteration: step.iteration,
+              toolCall: { name: step.toolCall.name, parameters: step.toolCall.parameters }
+            });
+          }
+
+          // 发送工具结果进度
+          if (step.toolResult) {
+            onProgress({
+              type: 'tool_result',
+              iteration: step.iteration,
+              toolResult: { success: step.toolResult.success, data: step.toolResult.data, error: step.toolResult.error }
+            });
+          }
+
+          // 发送普通步骤进度
+          if (step.thinking || step.content) {
+            onProgress({
+              type: 'step',
+              iteration: step.iteration,
+              content: step.thinking ?? step.content
+            });
+          }
         }
       });
 
@@ -234,6 +294,7 @@ export class TramberClient {
       return {
         success: result.success,
         result: result.finalAnswer,
+        error: result.error,
         steps
       };
 

@@ -27,7 +27,8 @@
     "@tramber/agent": "workspace:*",
     "@tramber/scene": "workspace:*",
     "@tramber/routine": "workspace:*",
-    "@tramber/experience": "workspace:*"
+    "@tramber/experience": "workspace:*",
+    "@tramber/permission": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.11.16",

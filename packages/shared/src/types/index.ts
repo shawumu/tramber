@@ -20,3 +20,6 @@ export * from './routine.js';
 
 // Experience
 export * from './experience.js';
+
+// Permission
+export * from './permission.js';

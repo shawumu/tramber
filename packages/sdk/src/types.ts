@@ -33,6 +33,8 @@ export interface ExecuteOptions {
   stream?: boolean;
   /** 进度回调 */
   onProgress?: (progress: ProgressUpdate) => void;
+  /** 权限确认回调 */
+  onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string) => Promise<boolean>;
 }
 
 export interface ProgressUpdate {

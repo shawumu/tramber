@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@tramber/shared": "workspace:*",
+    "@tramber/permission": "workspace:*",
     "glob": "^10.3.10"
   },
   "devDependencies": {

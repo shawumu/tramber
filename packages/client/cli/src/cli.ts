@@ -5,6 +5,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
+import inquirer from 'inquirer';
 import { TramberClient } from '@tramber/sdk';
 import { createContext, loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
 import { createRepl } from './repl.js';
@@ -24,6 +25,7 @@ program
   .option('-m, --model <model>', 'Model to use')
   .option('--no-experience', 'Disable experience')
   .option('--no-routine', 'Disable routine')
+  .option('-y, --yes', 'Auto-confirm all permissions')
   .action(async (input: string[], options) => {
     const context = await createContext({
       configPath: options.config
@@ -45,17 +47,53 @@ program
     if (input.length > 0) {
       // 执行单次命令
       const description = input.join(' ');
-      const result = await client.execute(description, {
-        sceneId: context.config.scene,
-        maxIterations: context.config.maxIterations
-      });
 
-      if (result.success) {
-        console.log(chalk.green('✓') + ' ' + chalk.white(result.result));
-      } else {
-        console.error(chalk.red('✗') + ' ' + chalk.white(result.error));
-        process.exit(1);
-      }
+      const executeTask = async (): Promise<void> => {
+        const result = await client.execute(description, {
+          sceneId: context.config.scene,
+          maxIterations: context.config.maxIterations,
+          onProgress: (progress) => {
+            // 显示工具调用和结果
+            if (progress.type === 'step' && progress.content) {
+              console.log(chalk.gray('▸') + ' ' + chalk.white(progress.content));
+            }
+            if (progress.type === 'tool_call' && progress.toolCall) {
+              console.log(chalk.cyan('▸') + ' ' + chalk.white(`[调用 ${progress.toolCall.name}]`));
+              console.log(chalk.gray('  参数:') + ' ' + JSON.stringify(progress.toolCall.parameters).slice(0, 200));
+            }
+            if (progress.type === 'tool_result' && progress.toolResult) {
+              if (progress.toolResult.success) {
+                console.log(chalk.green('▸') + ' ' + chalk.white(`[结果] ${JSON.stringify(progress.toolResult.data).slice(0, 200)}`));
+              } else {
+                console.error(chalk.red('▸') + ' ' + chalk.white(`[错误] ${progress.toolResult.error}`));
+              }
+            }
+          },
+          onPermissionRequired: async (toolCall, operation) => {
+            if (options.yes) {
+              return true;
+            }
+            const { confirm } = await inquirer.prompt([
+              {
+                type: 'confirm',
+                name: 'confirm',
+                message: `允许操作 "${operation}" (${toolCall.name})?`,
+                default: false
+              }
+            ]);
+            return confirm;
+          }
+        });
+
+        if (result.success) {
+          console.log(chalk.green('✓') + ' ' + chalk.white(result.result));
+        } else {
+          console.error(chalk.red('✗') + ' ' + chalk.white(result.error));
+          process.exit(1);
+        }
+      };
+
+      await executeTask();
     } else {
       // 启动 REPL
       await createRepl(client, context);

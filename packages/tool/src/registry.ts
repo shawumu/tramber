@@ -8,6 +8,8 @@ import type { Tool, ToolInfo, ToolRegistry, ToolResult } from './types.js';
 export class ToolRegistryImpl implements ToolRegistry {
   private tools = new Map<string, Tool>();
 
+  constructor() {}
+
   register(tool: Tool): void {
     if (this.tools.has(tool.id)) {
       throw new Error(`Tool ${tool.id} already registered`);

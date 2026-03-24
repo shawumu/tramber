@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Tramber CLI - 命令行界面",
   "bin": {
-    "tramber": "./dist/cli.js"
+    "tramber": "./bin/cli.js"
   },
   "files": [
     "dist",

@@ -1,5 +1,5 @@
 {
-  "name": "@tramber/agent",
+  "name": "@tramber/permission",
   "version": "0.1.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,20 +16,14 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@tramber/shared": "workspace:*",
-    "@tramber/tool": "workspace:*",
-    "@tramber/provider": "workspace:*",
-    "@tramber/permission": "workspace:*"
+    "@tramber/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.11.16",
-    "jest": "^29.7.0",
-    "ts-jest": "^29.1.2",
     "tsup": "^8.0.1",
     "typescript": "^5.3.3"
   }

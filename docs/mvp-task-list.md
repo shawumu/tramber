@@ -208,6 +208,29 @@ await registry.register(readFileTool);
 const result = await registry.execute('read_file', { path: 'test.txt' });
 ```
 
+**工具权限控制设计** (Phase 2 扩展):
+
+```typescript
+// .tramber/settings.json 工具权限配置
+{
+  "toolPermissions": {
+    // 按操作类型分类权限
+    "file_read": true,              // 允许读取文件
+    "file_write": "confirm",         // 写入需要确认
+    "file_delete": false,            // 禁止删除
+    "command_execute": ["npm", "git", "ls", "cat"],  // 白名单命令
+    "command_dangerous": "deny"      // 危险命令禁止
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowedPaths": ["./"],          // 默认允许当前目录
+    "deniedPatterns": ["rm -rf", "del /q", "format", "mkfs"],  // 禁止的命令模式
+    "maxFileSize": 10485760,         // 最大文件大小 10MB
+    "maxExecutionTime": 30000        // 最大执行时间 30秒
+  }
+}
+```
+
 ---
 
 ### Phase 3: Provider 系统 (0.5天) ✅ 已完成

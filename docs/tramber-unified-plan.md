@@ -2378,6 +2378,137 @@ $ tramber --scene coding
 
 详见 [第八章 8.3 Coding Workflow](#83-coding-workflow)。
 
+### 12.4 工具权限控制
+
+为保障系统安全，Tramber 提供了多层级的工具权限控制机制：
+
+#### 12.4.1 按操作类型分类
+
+```json
+{
+  "toolPermissions": {
+    // 文件操作权限
+    "file_read": true,              // 允许读取文件
+    "file_write": "confirm",         // 写入需要用户确认
+    "file_delete": false,            // 禁止删除操作
+    "file_rename": "confirm",        // 重命名需要确认
+
+    // 命令执行权限
+    "command_execute": ["npm", "git", "ls", "cat", "grep", "find"],
+    "command_dangerous": "deny",     // 危险命令禁止
+
+    // 网络权限
+    "network_http": false,           // 禁止 HTTP 请求
+    "network_https": "confirm"       // HTTPS 需要确认
+
+    // 系统权限
+    "system_env": "readonly",        // 环境变量只读
+    "system_process": false          // 禁止进程管理
+  }
+}
+```
+
+#### 12.4.2 沙箱模式
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowedPaths": ["./"],          // 默认：当前工作目录
+    "deniedPaths": [
+      "~/.ssh",
+      "~/.aws",
+      "/etc",
+      "C:\\Windows\\System32"
+    ],
+    "deniedPatterns": [
+      "rm -rf",
+      "del /q",
+      "format",
+      "mkfs",
+      "dd if=",
+      "> /dev/",
+      "curl.*|.*sh",
+      "wget.*|.*sh"
+    ],
+    "maxFileSize": 10485760,         // 10MB
+    "maxExecutionTime": 30000,        // 30秒
+    "maxMemoryUsage": 512 * 1024 * 1024  // 512MB
+  }
+}
+```
+
+#### 12.4.3 权限级别说明
+
+| 级别 | 值 | 说明 |
+|------|-----|------|
+| **允许** | `true` | 无需确认，直接执行 |
+| **确认** | `"confirm"` | 每次执行前需要用户确认 |
+| **禁止** | `false` / `"deny"` | 禁止执行 |
+| **白名单** | `string[]` | 仅允许列表中的操作 |
+| **只读** | `"readonly"` | 只读访问，禁止修改 |
+
+#### 12.4.4 工具注册时声明权限
+
+```typescript
+// packages/tool/src/builtin/execution/index.ts
+export const execTool: Tool = {
+  id: 'exec',
+  name: 'exec',
+  description: 'Execute shell command',
+  category: 'execution',
+  // 声明所需权限
+  permissions: {
+    level: 'dangerous',
+    requires: ['command_execute'],
+    fallback: 'confirm'  // 如果未配置权限，默认为确认模式
+  },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      command: { type: 'string' }
+    }
+  },
+  async execute(input) { /* ... */ }
+};
+```
+
+#### 12.4.5 权限检查流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    工具执行权限检查                           │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │  工具注册时检查   │
+                    │  - 声明权限      │
+                    │  - 权限级别      │
+                    └────────┬────────┘
+                             │
+                             ▼
+                    ┌─────────────────┐
+                    │  执行前检查      │
+                    └────────┬────────┘
+                             │
+                ┌────────────┼────────────┐
+                ▼            ▼            ▼
+         ┌──────────┐  ┌──────────┐  ┌──────────┐
+         │ 沙箱检查 │  │ 白名单检查│  │ 权限级别 │
+         └────┬─────┘  └────┬─────┘  └────┬─────┘
+              │             │             │
+              └─────────────┼─────────────┘
+                            │
+                            ▼
+                   ┌─────────────────┐
+                   │  决策结果        │
+                   │  - allow        │
+                   │  - confirm      │
+                   │  - deny         │
+                   └─────────────────┘
+```
+
 ---
 
 ## 十三、实现路线

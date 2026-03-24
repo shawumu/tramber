@@ -13,13 +13,17 @@
 import type { Agent, AgentContext, Task } from '@tramber/shared';
 import type { AIProvider } from '@tramber/provider';
 import type { ToolRegistry } from '@tramber/tool';
+import type { PermissionChecker } from '@tramber/permission';
 
 export interface AgentLoopOptions {
   agent: Agent;
   provider: AIProvider;
   toolRegistry: ToolRegistry;
+  permissionChecker?: PermissionChecker | undefined;
   maxIterations?: number;
   onStep?: (step: AgentLoopStep) => void;
+  /** 权限确认回调 */
+  onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string) => Promise<boolean>;
 }
 
 export interface AgentLoopStep {
@@ -38,19 +42,173 @@ export interface AgentLoopResult {
   iterations: number;
   error?: string;
   terminatedReason?: 'completed' | 'max_iterations' | 'error';
-  /** AI 响应的类型，用于 CLI 决定下一步 */
-  responseType?: 'summary' | 'wait_choice' | 'complete' | 'unknown';
 }
 
 export class AgentLoop {
-  private options: Required<AgentLoopOptions>;
+  private options: Omit<AgentLoopOptions, 'maxIterations' | 'onStep'> & {
+    maxIterations: number;
+    onStep: (step: AgentLoopStep) => void;
+  };
   private steps: AgentLoopStep[] = [];
 
   constructor(options: AgentLoopOptions) {
     this.options = {
-      maxIterations: 10,
-      onStep: () => {},
-      ...options
+      maxIterations: options.maxIterations ?? 10,
+      onStep: options.onStep ?? (() => { }),
+      agent: options.agent,
+      provider: options.provider,
+      toolRegistry: options.toolRegistry,
+      permissionChecker: options.permissionChecker,
+      onPermissionRequired: options.onPermissionRequired
+    };
+  }
+
+  /**
+   * 运行主循环
+   */
+  private async runLoop(context: AgentContext): Promise<AgentLoopResult> {
+    // 从当前迭代次数继续
+    const startIteration = context.iterations ?? 0;
+
+    for (let i = startIteration; i < this.options.maxIterations; i++) {
+      context.iterations = i + 1;
+
+      // Phase 1: Gather Context
+      await this.gatherContext(context);
+
+      // Phase 2: 调用 LLM
+      const response = await this.callLLM(context);
+      const content = response.content || '';
+
+      // Phase 2.5: 处理工具调用
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        console.error('[DEBUG] Tool calls received:', response.toolCalls.map(t => t.name));
+
+        // 先检查权限（如果有权限检查器）
+        if (this.options.permissionChecker) {
+          console.error('[DEBUG] Checking permissions...');
+          const permissionCheck = await this.checkPermissions(response.toolCalls);
+          console.error('[DEBUG] Permission check result:', JSON.stringify(permissionCheck));
+
+          if (permissionCheck.requiresConfirmation) {
+            console.error('[DEBUG] Requires confirmation, calling callback...');
+
+            // 调用回调请求用户确认
+            if (this.options.onPermissionRequired) {
+              const confirmed = await this.options.onPermissionRequired(
+                response.toolCalls[0],
+                permissionCheck.operation || 'unknown'
+              );
+
+              if (!confirmed) {
+                // 用户拒绝
+                return {
+                  success: false,
+                  error: '用户拒绝了权限请求',
+                  steps: [...this.steps],
+                  iterations: i + 1,
+                  terminatedReason: 'completed'
+                };
+              }
+              // 用户确认，继续执行工具
+            } else {
+              // 没有回调，默认拒绝
+              return {
+                success: false,
+                error: `需要权限确认: ${permissionCheck.operation || 'unknown'}`,
+                steps: [...this.steps],
+                iterations: i + 1,
+                terminatedReason: 'completed'
+              };
+            }
+          }
+        }
+
+        console.error('[DEBUG] Executing tools...');
+        const toolResult = await this.executeToolCalls(response.toolCalls);
+        console.error('[DEBUG] Tool results:', JSON.stringify(toolResult));
+
+        // 将助手消息（包含工具调用）添加到上下文
+        context.messages.push({
+          role: 'assistant',
+          content: content || `[调用 ${response.toolCalls.length} 个工具]`
+        });
+
+        // 将工具结果添加到上下文
+        const toolResultsText = toolResult.results.map((r: { toolCall: { name: string }; success: boolean; data?: unknown; error?: string }) => {
+          if (r.success) {
+            return `- ${r.toolCall.name}: ${JSON.stringify(r.data).slice(0, 500)}`;
+          }
+          return `- ${r.toolCall.name}: 失败 - ${r.error}`;
+        }).join('\n');
+
+        context.messages.push({
+          role: 'user',
+          content: `工具执行结果:\n${toolResultsText}`
+        });
+
+        // 继续循环，让 AI 基于工具结果生成新的响应
+        continue;
+      }
+
+      // Phase 3: 解析响应标记
+      const marker = this.extractMarker(content);
+
+      // 没有标记 - 接受响应，返回给用户
+      if (!marker) {
+        return {
+          success: true,
+          finalAnswer: content,
+          steps: [...this.steps],
+          iterations: i + 1,
+          terminatedReason: 'completed'
+        };
+      }
+
+      // 检查是否是有效标记
+      if (!this.isValidMarker(marker)) {
+        // 无效标记，要求重新生成
+        context.messages.push({
+          role: 'assistant',
+          content
+        });
+        context.messages.push({
+          role: 'user',
+          content: `错误：标记 "[${marker}]" 无效。可用的对话控制标记：[task-summary], [wait-user-choice], [task-complete]。请重新生成响应。`
+        });
+        continue;
+      }
+
+      // 处理对话控制标记 - 返回给用户
+      if (this.isConversationMarker(marker)) {
+        return {
+          success: true,
+          finalAnswer: content,
+          steps: [...this.steps],
+          iterations: i + 1,
+          terminatedReason: 'completed'
+        };
+      }
+
+      // 未知标记 - 要求重新生成
+      context.messages.push({
+        role: 'assistant',
+        content
+      });
+      context.messages.push({
+        role: 'user',
+        content: `错误：标记 "[${marker}]" 无效。可用的对话控制标记：[task-summary], [wait-user-choice], [task-complete]。请重新生成响应。`
+      });
+      continue;
+    }
+
+    // 达到最大迭代次数
+    return {
+      success: false,
+      steps: [...this.steps],
+      iterations: this.options.maxIterations,
+      terminatedReason: 'max_iterations',
+      error: 'Maximum iterations reached without completion'
     };
   }
 
@@ -91,79 +249,8 @@ export class AgentLoop {
         content: task.description
       });
 
-      // 循环处理 AI 响应，直到遇到对话控制标记
-      for (let i = 0; i < this.options.maxIterations; i++) {
-        context.iterations = i + 1;
-
-        // Phase 1: Gather Context
-        await this.gatherContext(context);
-
-        // Phase 2: 调用 LLM
-        const response = await this.callLLM(context);
-        const content = response.content || '';
-
-        // Phase 3: 解析响应标记
-        const marker = this.extractMarker(content);
-
-        // 检查是否是有效标记
-        if (!this.isValidMarker(marker)) {
-          // 无效标记，要求重新生成
-          context.messages.push({
-            role: 'assistant',
-            content
-          });
-          context.messages.push({
-            role: 'user',
-            content: `错误：你的响应没有以有效标记开头。必须使用以下标记之一：[read_file], [write_file], [execute_command], [search_code], [task-summary], [wait-user-choice], [task-complete]。请重新生成响应。`
-          });
-          continue;
-        }
-
-        // 处理对话控制标记 - 返回给用户
-        if (this.isConversationMarker(marker)) {
-          return {
-            success: true,
-            finalAnswer: content,
-            steps: [...this.steps],
-            iterations: i + 1,
-            terminatedReason: 'completed',
-            responseType: this.getConversationResponseType(marker)
-          };
-        }
-
-        // 处理工具标记 - 执行工具并继续
-        const toolResult = await this.executeToolFromMarker(marker, content);
-        if (!toolResult.success) {
-          // 工具执行失败，返回错误
-          return {
-            success: false,
-            finalAnswer: `工具执行失败：${toolResult.error}`,
-            steps: [...this.steps],
-            iterations: i + 1,
-            terminatedReason: 'error',
-            error: toolResult.error
-          };
-        }
-
-        // 添加工具结果到上下文，继续循环
-        context.messages.push({
-          role: 'assistant',
-          content
-        });
-        context.messages.push({
-          role: 'user',
-          content: `工具执行结果：${JSON.stringify(toolResult.data)}`
-        });
-      }
-
-      // 达到最大迭代次数
-      return {
-        success: false,
-        steps: [...this.steps],
-        iterations: this.options.maxIterations,
-        terminatedReason: 'max_iterations',
-        error: 'Maximum iterations reached without completion'
-      };
+      // 运行主循环
+      return await this.runLoop(context);
 
     } catch (error) {
       return {
@@ -190,7 +277,6 @@ export class AgentLoop {
   private isValidMarker(marker: string | null): marker is string {
     if (!marker) return false;
     const validMarkers = [
-      'read_file', 'write_file', 'execute_command', 'search_code',
       'task-summary', 'wait-user-choice', 'task-complete'
     ];
     return validMarkers.includes(marker);
@@ -205,56 +291,9 @@ export class AgentLoop {
   }
 
   /**
-   * 获取对话响应类型
-   */
-  private getConversationResponseType(marker: string): 'summary' | 'wait_choice' | 'complete' {
-    const typeMap: Record<string, 'summary' | 'wait_choice' | 'complete'> = {
-      'task-summary': 'summary',
-      'wait-user-choice': 'wait_choice',
-      'task-complete': 'complete'
-    };
-    return typeMap[marker] ?? 'summary';
-  }
-
-  /**
-   * 从标记执行工具
-   */
-  private async executeToolFromMarker(marker: string, content: string): Promise<{ success: boolean; data?: unknown; error?: string }> {
-    try {
-      // 提取标记后的参数
-      const restContent = content.replace(/^\[[\w-]+\]\s*/, '').trim();
-
-      switch (marker) {
-        case 'read_file': {
-          const filePath = restContent.split('\n')[0].trim();
-          return await this.options.toolRegistry.execute('read_file', { path: filePath });
-        }
-        case 'write_file': {
-          const lines = restContent.split('\n');
-          const filePath = lines[0].trim();
-          const fileContent = lines.slice(1).join('\n').trim();
-          return await this.options.toolRegistry.execute('write_file', { path: filePath, content: fileContent });
-        }
-        case 'execute_command': {
-          const command = restContent.trim();
-          return await this.options.toolRegistry.execute('exec', { command });
-        }
-        case 'search_code': {
-          const query = restContent.trim();
-          return await this.options.toolRegistry.execute('search', { query });
-        }
-        default:
-          return { success: false, error: `Unknown tool marker: ${marker}` };
-      }
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  /**
    * 调用 LLM
    */
-  private async callLLM(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ name: string; parameters: Record<string, unknown> }> }> {
+  private async callLLM(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }> }> {
     const step: AgentLoopStep = {
       iteration: context.iterations ?? 0,
       phase: 'action'
@@ -283,8 +322,100 @@ export class AgentLoop {
       step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
       this.addStep(step);
       this.options.onStep(step);
-      return { content: '', toolCalls: [] };
+      return { content: '', toolCalls: undefined };
     }
+  }
+
+  /**
+   * 执行工具调用
+   */
+  private async executeToolCalls(toolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }>): Promise<{
+    results: Array<{ toolCall: typeof toolCalls[0]; success: boolean; data?: unknown; error?: string }>;
+  }> {
+    const results: Array<{ toolCall: typeof toolCalls[0]; success: boolean; data?: unknown; error?: string }> = [];
+
+    for (const toolCall of toolCalls) {
+      try {
+        const result = await this.options.toolRegistry.execute(toolCall.name, toolCall.parameters);
+        results.push({
+          toolCall,
+          success: result.success,
+          data: result.data,
+          error: result.error
+        });
+      } catch (error) {
+        results.push({
+          toolCall,
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return { results };
+  }
+
+  /**
+   * 检查工具调用权限
+   */
+  private async checkPermissions(toolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }>): Promise<{
+    requiresConfirmation: boolean;
+    operation?: string;
+  }> {
+    if (!this.options.permissionChecker) {
+      return { requiresConfirmation: false };
+    }
+
+    for (const toolCall of toolCalls) {
+      const operation = this.getOperationType(toolCall.name) as keyof import('@tramber/shared').ToolPermissions;
+      const permissionResult = await this.options.permissionChecker.checkToolPermission(
+        toolCall.name,
+        operation,
+        toolCall.parameters
+      );
+
+      if (permissionResult.requiresConfirmation) {
+        return {
+          requiresConfirmation: true,
+          operation: String(operation)
+        };
+      }
+
+      if (!permissionResult.allowed) {
+        return {
+          requiresConfirmation: false
+        };
+      }
+    }
+
+    return { requiresConfirmation: false };
+  }
+
+  /**
+   * 获取工具对应的操作类型
+   */
+  private getOperationType(toolId: string): string {
+    if (toolId.startsWith('read') || toolId.startsWith('get')) {
+      return 'file_read';
+    }
+    if (toolId.startsWith('write') || toolId.startsWith('create') || toolId.startsWith('edit')) {
+      return 'file_write';
+    }
+    if (toolId.startsWith('delete') || toolId.startsWith('remove')) {
+      return 'file_delete';
+    }
+    if (toolId.startsWith('rename') || toolId.startsWith('move')) {
+      return 'file_rename';
+    }
+    return 'command_execute';
+  }
+
+  /**
+   * 从错误信息中提取操作类型
+   */
+  private extractOperationFromError(error: string): string {
+    const match = error.match(/操作\s+(\S+)\s+需要用户确认/);
+    return match ? match[1] : 'unknown';
   }
 
   private async gatherContext(context: AgentContext): Promise<void> {
@@ -315,63 +446,46 @@ export class AgentLoop {
 - 分析代码结构，理解项目需求
 - 帮助用户完成编程任务
 
-## 重要：每次响应必须以有效标记开头
+## 对话控制标记
 
-**你的每次响应必须以以下标记之一开头**，否则将被拒绝并要求重新生成。
+当需要与用户交互时，使用以下标记开头：
 
-### 工具执行标记（将自动执行对应的工具）
-
-#### [read_file]
-读取文件内容。
-格式：[read_file] <文件路径>
-
-#### [write_file]
-写入文件内容。
-格式：[write_file] <文件路径>
-<文件内容>
-
-#### [execute_command]
-执行 shell 命令。
-格式：[execute_command] <命令>
-
-#### [search_code]
-搜索代码。
-格式：[search_code] <搜索内容>
-
-### 对话控制标记
-
-#### [task-summary]
+### [task-summary]
 报告操作结果或当前进度。
-使用场景：执行完工具操作后，报告结果给用户。
-示例：[task-summary]
+使用场景：执行完操作后，向用户报告结果。
+
+### [wait-user-choice]
+需要用户提供更多信息或做出选择。
+使用场景：需要用户补充信息、选择选项、确认操作等。
+
+### [task-complete]
+任务完全完成，给出最终总结。
+使用场景：任务已完成，可以结束对话。
+
+## 工具使用
+
+系统已配置以下工具，你可以在需要时调用：
+${this.options.toolRegistry.list().map(t => `- **${t.id}**: ${t.description}`).join('\n')}
+
+## 响应规则
+
+1. **直接执行操作**：使用工具时直接输出结果，无需使用标记
+2. **对话时使用标记**：需要与用户交互时，使用上述对话控制标记
+3. **清晰简洁**：报告结果时清晰明了，避免冗余
+
+## 示例
+
+用户：读取 package.json
+助手：[task-summary]
 ✓ 已读取 package.json，包含以下依赖：
 - react: ^18.2.0
 - typescript: ^5.0.0
 
-#### [wait-user-choice]
-需要用户提供更多信息或做出选择。
-使用场景：需要用户补充信息、选择选项、确认操作等。
-示例：[wait-user-choice]
-为了帮你修复 bug，请提供以下信息：
-1. Bug 在哪个文件中？
-2. Bug 的具体表现是什么？
-
-#### [task-complete]
-任务完全完成，给出最终总结。
-使用场景：任务已完成，可以结束对话。
-示例：[task-complete]
-✓ 分析完成。这个项目是一个 React + TypeScript 的 monorepo，包含 5 个主要包。
-
-## 响应规则
-
-1. **必须使用有效标记开头**：每次响应必须使用上述标记之一
-2. **工具操作简洁化**：使用工具标记时，只输出标记和必要参数，不需要额外说明
-3. **报告结果使用 summary**：执行工具后，用 [task-summary] 报告结果
-4. **等待用户使用 wait-choice**：需要用户输入时，用 [wait-user-choice]
-5. **完成使用 complete**：任务结束时，用 [task-complete] 给出总结
-
-## 可用工具
-当前可用工具：${this.options.toolRegistry.list().map(t => `- ${t.id}: ${t.description}`).join('\n')}
+用户：帮我分析这个项目
+助手：[wait-user-choice]
+为了更好地帮你分析，请告诉我：
+1. 你想了解项目的哪些方面？（架构/技术栈/功能）
+2. 有没有特定的问题需要解决？
 `;
   }
 
