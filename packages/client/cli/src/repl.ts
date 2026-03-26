@@ -12,10 +12,12 @@ export interface ReplOptions {
   prompt?: string;
   welcomeMessage?: string;
   exitCommand?: string[];
+  autoConfirm?: boolean; // 自动确认权限
 }
 
 const HISTORY: string[] = [];
 let historyIndex = -1;
+let permissionInProgress = false; // 权限确认进行中标志
 
 /**
  * 创建 REPL 界面
@@ -24,7 +26,8 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
   const {
     prompt = 'You',
     welcomeMessage = generateWelcomeMessage(),
-    exitCommand = ['exit', 'quit', 'q']
+    exitCommand = ['exit', 'quit', 'q'],
+    autoConfirm = false
   } = options;
 
   // 创建 readline 接口
@@ -42,6 +45,10 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
 
   // 处理输入
   rl.on('line', async (input) => {
+    // 如果正在权限确认期间，忽略输入
+    if (permissionInProgress) {
+      return;
+    }
     const trimmed = input.trim();
 
     // 添加到历史
@@ -71,7 +78,7 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
     }
 
     // 执行任务
-    await executeTask(trimmed, client, context);
+    await executeTask(trimmed, client, context, autoConfirm, rl);
     rl.prompt();
   });
 
@@ -256,7 +263,7 @@ function handleConfigCommand(args: string[], context: CliContext) {
 /**
  * 执行任务
  */
-async function executeTask(input: string, client: TramberClient, context: CliContext) {
+async function executeTask(input: string, client: TramberClient, context: CliContext, autoConfirm = false, mainRl?: readline.ReadLine) {
   console.log('');
 
   // 显示思考状态
@@ -276,6 +283,43 @@ async function executeTask(input: string, client: TramberClient, context: CliCon
           clearInterval(spinnerInterval);
           process.stdout.write('\r' + chalk.gray('▸ ') + chalk.white(update.content ?? '') + '\n');
         }
+      },
+      onPermissionRequired: async (toolCall, operation) => {
+        if (autoConfirm) {
+          return true;
+        }
+        // 停止 spinner
+        clearInterval(spinnerInterval);
+
+        // 设置权限确认进行中标志
+        permissionInProgress = true;
+
+        // 暂停主 readline（如果存在）
+        if (mainRl) {
+          mainRl.pause();
+        }
+
+        // 直接询问用户
+        const answer = await new Promise<boolean>((resolve) => {
+          const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+          });
+
+          rl.question(`允许操作 "${operation}" (${toolCall.name})? (y/N): `, (answer) => {
+            rl.close();
+            // 恢复主 readline
+            if (mainRl) {
+              mainRl.resume();
+            }
+            // 清除权限确认标志
+            permissionInProgress = false;
+            const confirmed = answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
+            resolve(confirmed);
+          });
+        });
+
+        return answer;
       }
     });
 

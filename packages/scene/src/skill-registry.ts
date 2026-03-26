@@ -262,7 +262,7 @@ export class SkillRegistry {
 
       return {
         success: loopResult.success,
-        output: loopResult.finalAnswer,
+        output: loopResult.success ? loopResult.finalAnswer : undefined,
         steps: loopResult.steps
       };
     } catch (error) {

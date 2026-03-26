@@ -1,6 +1,6 @@
 {
   "name": "tramber",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Knowledge-preserving multi-scene AI agent with Scene/Workflow/Skill/Routine/Tool hierarchy",

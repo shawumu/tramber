@@ -7,6 +7,9 @@
 // 导出所有类型
 export * from './types/index.js';
 
+// 导出 Logger
+export * from './logger.js';
+
 // 工具函数
 export function generateId(prefix: string = 'tramber'): string {
   const timestamp = Date.now().toString(36);

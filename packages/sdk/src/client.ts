@@ -22,6 +22,7 @@ import type {
   TramberResponse,
   ListOptions
 } from './types.js';
+import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 /**
  * Tramber Client - 主要入口点
@@ -151,16 +152,26 @@ export class TramberClient {
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
+      debug(NAMESPACE.SDK_CLIENT, LogLevel.TRACE, 'Client already initialized');
       return;
     }
+
+    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Initializing TramberClient', {
+      workspacePath: this.options.workspacePath,
+      enableExperience: this.options.enableExperience,
+      enableRoutine: this.options.enableRoutine
+    });
 
     // 加载权限配置
     if (!this.permissionConfigLoaded) {
       try {
+        debug(NAMESPACE.PERMISSION_CONFIG, LogLevel.VERBOSE, 'Loading permission config');
         const permissionConfig = await this.configLoader.load();
         this.permissionChecker = new PermissionChecker(permissionConfig);
         this.permissionConfigLoaded = true;
-      } catch {
+        debug(NAMESPACE.PERMISSION_CONFIG, LogLevel.BASIC, 'Permission config loaded successfully');
+      } catch (error) {
+        debugError(NAMESPACE.PERMISSION_CONFIG, 'Failed to load permission config, using defaults', error);
         // 保持默认配置
       }
     }
@@ -168,14 +179,20 @@ export class TramberClient {
     // 加载经验数据
     if (this.options.enableExperience) {
       try {
+        debug(NAMESPACE.EXPERIENCE_STORAGE, LogLevel.VERBOSE, 'Loading experiences');
         const allExperiences = await this.experienceStorage.listAll();
         this.experienceRetriever.updateExperiences(allExperiences);
-      } catch {
+        debug(NAMESPACE.EXPERIENCE_STORAGE, LogLevel.BASIC, 'Experiences loaded', {
+          count: allExperiences.length
+        });
+      } catch (error) {
+        debugError(NAMESPACE.EXPERIENCE_STORAGE, 'Failed to load experiences', error);
         // 忽略错误
       }
     }
 
     this.isInitialized = true;
+    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'TramberClient initialized successfully');
   }
 
   /**
@@ -193,10 +210,16 @@ export class TramberClient {
   async execute(description: string, options: ExecuteOptions = {}): Promise<TramberResponse> {
     await this.ensureInitialized();
 
+    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Executing task', {
+      description,
+      sceneId: options.sceneId ?? 'coding'
+    });
+
     const steps: ProgressUpdate[] = [];
 
     // 检查 API Key
     if (!this.options.apiKey) {
+      debugError(NAMESPACE.SDK_CLIENT, 'API Key not provided');
       return {
         success: false,
         error: 'API Key is required. Set ANTHROPIC_API_KEY environment variable or pass apiKey option.',
@@ -214,6 +237,8 @@ export class TramberClient {
         inputs: { workspacePath: this.options.workspacePath }
       };
 
+      debug(NAMESPACE.SDK_CLIENT, LogLevel.TRACE, 'Task created', { taskId: task.id });
+
       // 进度回调包装
       const onProgress = (update: ProgressUpdate) => {
         steps.push(update);
@@ -223,6 +248,10 @@ export class TramberClient {
       // 加载相关经验
       if (this.options.enableExperience) {
         onProgress({ type: 'step', content: 'Loading experiences...' });
+        debug(NAMESPACE.EXPERIENCE_MANAGER, LogLevel.VERBOSE, 'Searching for relevant experiences', {
+          query: description,
+          limit: 3
+        });
         await this.experienceManager.search({
           target: 'skill',
           text: description,
@@ -233,11 +262,19 @@ export class TramberClient {
       // 检查是否有可用的 Routine
       if (this.options.enableRoutine) {
         onProgress({ type: 'step', content: 'Checking routines...' });
-        this.routineManager.listRoutines();
+        const routines = this.routineManager.listRoutines();
+        debug(NAMESPACE.ROUTINE_MANAGER, LogLevel.VERBOSE, 'Checking routines', {
+          count: routines.length
+        });
         // TODO: 匹配 Routine
       }
 
       // 创建 Agent Loop
+      debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Creating Agent Loop', {
+        hasOnPermissionRequired: !!options.onPermissionRequired,
+        maxIterations: options.maxIterations ?? 10
+      });
+
       const agentLoop = this.agentLoopFactory({
         agent: {
           id: 'tramber-agent',
@@ -286,19 +323,28 @@ export class TramberClient {
       onProgress({ type: 'step', content: 'Executing task...' });
       const result = await agentLoop.execute(task);
 
+      debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Task execution completed', {
+        success: result.success,
+        iterations: result.iterations,
+        terminatedReason: result.terminatedReason
+      });
+
       // 记录经验
       if (result.success && this.options.enableExperience) {
+        debug(NAMESPACE.EXPERIENCE_MANAGER, LogLevel.TRACE, 'Recording successful experience');
         // TODO: 记录成功经验
       }
 
       return {
         success: result.success,
-        result: result.finalAnswer,
-        error: result.error,
-        steps
+        result: result.success ? result.finalAnswer : undefined,
+        error: result.success ? undefined : result.error,
+        steps,
+        terminatedReason: result.terminatedReason
       };
 
     } catch (error) {
+      debugError(NAMESPACE.SDK_CLIENT, 'Task execution failed with exception', error);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),

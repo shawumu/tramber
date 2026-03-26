@@ -51,6 +51,8 @@ export interface TramberResponse {
   result?: unknown;
   steps?: ProgressUpdate[];
   error?: string;
+  /** 终止原因 */
+  terminatedReason?: 'completed' | 'max_iterations' | 'error';
 }
 
 export interface ListOptions {

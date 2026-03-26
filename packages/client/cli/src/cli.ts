@@ -9,6 +9,32 @@ import inquirer from 'inquirer';
 import { TramberClient } from '@tramber/sdk';
 import { createContext, loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
 import { createRepl } from './repl.js';
+import { Logger, LogLevel, NAMESPACE, debug } from '@tramber/shared';
+
+/**
+ * 错误处理函数 - 根据终止原因显示不同的错误信息
+ */
+function handleError(error: string | undefined, terminatedReason?: 'completed' | 'max_iterations' | 'error'): void {
+  if (!error) {
+    console.error(chalk.red('✗') + ' ' + chalk.white('未知错误'));
+    return;
+  }
+
+  switch (terminatedReason) {
+    case 'max_iterations':
+      console.error(chalk.yellow('✗') + ' ' + chalk.white('任务未完成，达到最大迭代次数'));
+      console.log(chalk.gray('  ') + chalk.white(error));
+      console.log(chalk.gray('提示: 使用 --max-iterations 增加限制'));
+      break;
+
+    case 'error':
+      console.error(chalk.red('✗') + ' ' + chalk.white(error));
+      break;
+
+    default:
+      console.error(chalk.red('✗') + ' ' + chalk.white(error));
+  }
+}
 
 const program = new Command();
 
@@ -26,7 +52,27 @@ program
   .option('--no-experience', 'Disable experience')
   .option('--no-routine', 'Disable routine')
   .option('-y, --yes', 'Auto-confirm all permissions')
+  .option('--debug', 'Enable debug mode')
+  .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace', 'basic')
+  .option('--debug-namespace <ns...>', 'Debug namespaces: agent, tool, provider, permission, sdk, etc.')
+  .option('--debug-file <path>', 'Write debug output to file')
   .action(async (input: string[], options) => {
+    // 配置 Logger（在所有其他操作之前）
+    if (options.debug) {
+      Logger.getInstance().configure({
+        enabled: true,
+        level: options.debugLevel as LogLevel,
+        namespaces: options.debugNamespace,
+        output: options.debugFile ? 'file' : 'console',
+        filePath: options.debugFile
+      });
+    }
+
+    debug(NAMESPACE.CLI, LogLevel.BASIC, 'CLI started', {
+      input: input.join(' ') || '[REPL mode]',
+      debugEnabled: options.debug
+    });
+
     const context = await createContext({
       configPath: options.config
     });
@@ -49,6 +95,24 @@ program
       const description = input.join(' ');
 
       const executeTask = async (): Promise<void> => {
+        const permissionHandler = async (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string) => {
+          if (options.yes) {
+            debug(NAMESPACE.CLI, LogLevel.BASIC, 'Auto-confirming permission', { operation, tool: toolCall.name });
+            return true;
+          }
+          debug(NAMESPACE.CLI, LogLevel.BASIC, 'Prompting user for permission', { operation, tool: toolCall.name });
+          const { confirm } = await inquirer.prompt([
+            {
+              type: 'confirm',
+              name: 'confirm',
+              message: `允许操作 "${operation}" (${toolCall.name})?`,
+              default: false
+            }
+          ]);
+          debug(NAMESPACE.CLI, LogLevel.BASIC, 'User permission decision', { confirmed: confirm });
+          return confirm;
+        };
+
         const result = await client.execute(description, {
           sceneId: context.config.scene,
           maxIterations: context.config.maxIterations,
@@ -69,26 +133,13 @@ program
               }
             }
           },
-          onPermissionRequired: async (toolCall, operation) => {
-            if (options.yes) {
-              return true;
-            }
-            const { confirm } = await inquirer.prompt([
-              {
-                type: 'confirm',
-                name: 'confirm',
-                message: `允许操作 "${operation}" (${toolCall.name})?`,
-                default: false
-              }
-            ]);
-            return confirm;
-          }
+          onPermissionRequired: permissionHandler
         });
 
         if (result.success) {
           console.log(chalk.green('✓') + ' ' + chalk.white(result.result));
         } else {
-          console.error(chalk.red('✗') + ' ' + chalk.white(result.error));
+          handleError(result.error, result.terminatedReason);
           process.exit(1);
         }
       };
@@ -96,7 +147,7 @@ program
       await executeTask();
     } else {
       // 启动 REPL
-      await createRepl(client, context);
+      await createRepl(client, context, { autoConfirm: options.yes });
     }
   });
 

@@ -12,6 +12,7 @@ import type {
   ToolCall,
   TokenUsage
 } from '../types.js';
+import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 // Import types from the messages module directly
 type MessageCreateParamsBase = Anthropic.MessageCreateParamsNonStreaming & Anthropic.MessageCreateParamsStreaming;
@@ -26,6 +27,10 @@ export class AnthropicProvider implements AIProvider {
   }) {
     this.client = new Anthropic({
       apiKey: config.apiKey,
+      baseURL: config.baseURL
+    });
+    debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, 'AnthropicProvider initialized', {
+      model: this.getDefaultModel(),
       baseURL: config.baseURL
     });
   }
@@ -93,6 +98,12 @@ export class AnthropicProvider implements AIProvider {
   }
 
   async chat(options: ChatOptions): Promise<ChatResponse> {
+    debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.VERBOSE, 'Sending chat request', {
+      messageCount: options.messages.length,
+      toolsCount: options.tools?.length ?? 0,
+      model: this.getDefaultModel()
+    });
+
     try {
       const messages = this.convertMessages(options.messages);
       const systemMessages = (this as any)._systemMessages || [];
@@ -117,18 +128,32 @@ export class AnthropicProvider implements AIProvider {
 
       const response = await this.client.messages.create(params);
 
+      debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.TRACE, 'Raw API response', {
+        stopReason: response.stop_reason,
+        usage: response.usage
+      });
+
       const content = response.content
         .filter(this.isTextBlock)
         .map(block => (block as Anthropic.TextBlock).text)
         .join('\n');
 
+      const toolCalls = this.extractToolCalls(response.content);
+
+      debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.VERBOSE, 'Chat response received', {
+        contentLength: content.length,
+        toolCallsCount: toolCalls?.length ?? 0,
+        usage: this.extractUsage(response.usage)
+      });
+
       return {
         content,
-        toolCalls: this.extractToolCalls(response.content),
+        toolCalls,
         usage: this.extractUsage(response.usage),
         finishReason: response.stop_reason ?? undefined
       };
     } catch (error) {
+      debugError(NAMESPACE.PROVIDER_ANTHROPIC, 'API request failed', error);
       if (error instanceof Error) {
         throw new Error(`Anthropic API error: ${error.message}`);
       }

@@ -110,7 +110,7 @@ export class SceneManager {
 
       return {
         success: result.success,
-        output: result.finalAnswer,
+        output: result.success ? result.finalAnswer : undefined,
         steps: result.steps
       };
     } catch (error) {

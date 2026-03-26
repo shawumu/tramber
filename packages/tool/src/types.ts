@@ -3,9 +3,19 @@
  * Tool 系统类型定义
  */
 
-import type { ToolCategory, ToolInputSchema, ToolResult } from '@tramber/shared';
+import type { ToolCategory, ToolInputSchema, ToolResult, ToolPermissions } from '@tramber/shared';
 
 export type { ToolResult };
+
+/**
+ * 工具权限声明
+ */
+export interface ToolPermission {
+  /** 权限级别 */
+  level: 'safe' | 'dangerous' | 'critical';
+  /** 所需权限类型 */
+  operation: keyof ToolPermissions;
+}
 
 export interface Tool {
   id: string;
@@ -13,6 +23,8 @@ export interface Tool {
   description: string;
   category: ToolCategory;
   inputSchema: ToolInputSchema;
+  /** 权限声明（可选）*/
+  permission?: ToolPermission;
   execute(input: unknown): Promise<ToolResult>;
 }
 
@@ -31,4 +43,6 @@ export interface ToolInfo {
   description: string;
   category: ToolCategory;
   inputSchema: ToolInputSchema;
+  /** 权限声明（可选）*/
+  permission?: ToolPermission;
 }

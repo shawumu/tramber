@@ -752,4 +752,758 @@ tests/
 
 ---
 
+## 十、架构优化计划（Phase 9）
+
+基于 [architecture-review.md](./architecture-review.md) 的架构分析，以下是已确认的优化方案。
+
+### 10.1 优化目标
+
+| 类别 | 目标 |
+|------|------|
+| **可靠性** | 解决 Agent Loop 死循环问题，简化控制逻辑 |
+| **可维护性** | 分离关注点，明确类型契约 |
+| **用户体验** | 改进错误处理，提供可操作的建议 |
+
+### 10.2 已确认的优化方案
+
+#### ✅ 方案 1: 简化 Agent Loop 控制流
+
+**问题**: 文本标记与 ToolCalls 混用，终止判断不清晰
+
+**解决方案**:
+```typescript
+// 核心逻辑简化
+for (let i = 0; i < maxIterations; i++) {
+  const response = await callLLM(context);
+
+  // 有工具调用 → 执行并继续
+  if (response.toolCalls?.length > 0) {
+    await executeTools(response.toolCalls);
+    continue;
+  }
+
+  // 无工具调用 → 输出给用户，等待回应
+  return { success: true, finalAnswer: response.content };
+}
+```
+
+**影响**:
+- ✅ 逻辑简单，不会误判
+- ✅ 不会死循环
+- ⚠️ 用户需要更频繁输入"继续"
+
+**文件**: `packages/agent/src/loop.ts`
+
+---
+
+#### ✅ 方案 2: 权限类型映射改进
+
+**问题**: `getOperationType()` 字符串匹配不可靠
+
+**解决方案**:
+```typescript
+// 在 Tool 定义中声明权限类型
+interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  permission?: {
+    level: 'safe' | 'dangerous' | 'critical';
+    operation: keyof ToolPermissions;
+  };
+}
+```
+
+**文件**: `packages/tool/src/types.ts`, `packages/agent/src/loop.ts`
+
+---
+
+#### ✅ 方案 3: 引入 ConversationManager
+
+**目标**: 分离关注点，管理内存中的对话状态
+
+**组件设计**:
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ConversationManager (内存状态管理)                          │
+│  - 管理对话状态 (idle/running/waiting_user)                  │
+│  - 管理消息历史                                             │
+│  - 跟踪迭代次数                                             │
+│  - 判断是否需要继续                                         │
+└─────────────────────────────────────────────────────────────┘
+         │
+         ├──────────────┬──────────────┐
+         ▼              ▼              ▼
+    ToolExecutor   PermissionGuard   ResponseParser
+    (执行工具)      (权限检查)      (解析响应)
+```
+
+**注意**: ConversationManager 仅管理内存状态，不涉及持久化
+
+---
+
+#### ✅ 方案 4: 明确类型契约
+
+**问题**: AgentLoopResult 类型不够明确
+
+**解决方案**:
+```typescript
+// 使用 discriminated union
+type AgentLoopResult =
+  | { status: 'completed'; output: string; experiences: Experience[] }
+  | { status: 'waiting_user'; prompt: string; options: string[] }
+  | { status: 'failed'; error: string; recoverable: boolean }
+  | { status: 'max_iterations'; partialResult?: string };
+```
+
+---
+
+#### ✅ 方案 5: CLI 错误处理改进
+
+**问题**: 简单的成功/失败输出
+
+**解决方案**:
+```typescript
+// 更详细的错误分类
+if (!result.success) {
+  switch (result.errorType) {
+    case 'permission_denied':
+      console.error(chalk.red('权限被拒绝'));
+      console.log(chalk.gray('提示: 使用 -y 参数自动确认，或修改配置文件'));
+      break;
+    case 'api_error':
+      console.error(chalk.red('API 错误'));
+      console.log(chalk.gray(result.error));
+      break;
+    case 'max_iterations':
+      console.error(chalk.yellow('任务未完成，达到最大迭代次数'));
+      console.log(chalk.gray('提示: 可以使用 --max-iterations 增加限制'));
+      break;
+  }
+}
+```
+
+**文件**: `packages/client/cli/src/cli.ts`
+
+---
+
+### 10.3 暂缓的优化
+
+以下优化已确认有价值，但暂缓实施：
+
+| 方案 | 原因 |
+|------|------|
+| Permission 模块完整重构 | 当前可用，优先完成核心优化 |
+| CLI 会话管理 | 功能完整度要求高，需要更多设计 |
+| CLI 输出格式多样化 | 非核心功能 |
+
+---
+
+### 10.4 实施优先级
+
+| 优先级 | 方案 | 预估时间 |
+|-------|------|---------|
+| **P0** | 方案 1: 简化 Agent Loop | 0.5天 |
+| **P0** | 方案 2: 权限类型映射 | 0.5天 |
+| **P1** | 方案 3: ConversationManager | 1天 |
+| **P1** | 方案 4: 类型契约 | 0.5天 |
+| **P1** | 方案 5: CLI 错误处理 | 0.5天 |
+| **总计** | | **3天** |
+
+---
+
+### 10.5 实施检查清单
+
+- [x] 方案 1: 移除文本标记解析，简化 Agent Loop
+- [x] 方案 1: 更新系统提示词
+- [x] 方案 2: 在 Tool 定义中添加 permission 字段
+- [x] 方案 2: 更新权限检查逻辑
+- [x] 方案 3: 创建 ConversationManager
+- [x] 方案 3: 创建 ToolExecutor
+- [x] 方案 3: 创建 PermissionGuard
+- [x] 方案 3: 重构 Agent Loop 使用新组件
+- [x] 方案 4: 更新 AgentLoopResult 类型定义
+- [x] 方案 5: 实现错误分类和可操作建议
+- [x] 测试所有改动
+- [x] 更新文档
+
+---
+
+### 10.6 全局调试系统设计 (Phase 9.5)
+
+#### 问题
+
+测试时报错很多时候不知道是发生了什么事，只有一个 "Error"，难以定位问题。仅在 Agent 层添加 debug 不够，问题可能发生在各个层级：
+
+| 层级 | 可能的问题 |
+|------|-----------|
+| **Provider** | API 调用失败、网络超时、响应解析错误 |
+| **Tool** | 文件不存在、沙箱限制、执行超时 |
+| **Permission** | 配置加载失败、权限规则匹配错误 |
+| **SDK Client** | 配置文件解析、初始化失败 |
+| **CLI** | 参数解析、环境变量问题 |
+
+#### 设计方案：全局 Logger
+
+**1. Logger 放在 shared 包**
+
+```typescript
+// packages/shared/src/logger.ts
+
+export enum LogLevel {
+  ERROR = 'error',     // 仅错误
+  BASIC = 'basic',     // 关键步骤 + 错误
+  VERBOSE = 'verbose', // 详细信息
+  TRACE = 'trace'      // 所有细节
+}
+
+export interface LoggerOptions {
+  enabled?: boolean;
+  level?: LogLevel;
+  namespaces?: string[];  // 命名空间过滤，如 ['tramber:agent', 'tramber:tool']
+  output?: 'console' | 'file';
+  filePath?: string;
+}
+
+/**
+ * 全局单例 Logger
+ *
+ * 支持命名空间，方便按模块过滤
+ */
+export class Logger {
+  private static instance: Logger;
+  private enabled: boolean;
+  private level: LogLevel;
+  private namespaces: Set<string>;
+  private output: 'console' | 'file';
+  private filePath?: string;
+
+  private constructor() {
+    // 从环境变量读取配置
+    const debugEnv = process.env.TRAMBER_DEBUG;
+    this.enabled = debugEnv !== undefined && debugEnv !== 'false' && debugEnv !== '0';
+
+    const levelEnv = process.env.TRAMBER_DEBUG_LEVEL;
+    this.level = (levelEnv as LogLevel) ?? LogLevel.BASIC;
+
+    const namespaceEnv = process.env.TRAMBER_DEBUG_NAMESPACES;
+    this.namespaces = namespaceEnv
+      ? new Set(namespaceEnv.split(',').map(n => n.trim()))
+      : new Set();
+
+    this.output = (process.env.TRAMBER_DEBUG_OUTPUT as 'console' | 'file') ?? 'console';
+    this.filePath = process.env.TRAMBER_DEBUG_FILE;
+  }
+
+  static getInstance(): Logger {
+    if (!Logger.instance) {
+      Logger.instance = new Logger();
+    }
+    return Logger.instance;
+  }
+
+  /**
+   * 配置 Logger（用于 CLI 选项覆盖环境变量）
+   */
+  configure(options: LoggerOptions): void {
+    if (options.enabled !== undefined) {
+      this.enabled = options.enabled;
+    }
+    if (options.level !== undefined) {
+      this.level = options.level;
+    }
+    if (options.namespaces !== undefined) {
+      this.namespaces = new Set(options.namespaces);
+    }
+    if (options.output !== undefined) {
+      this.output = options.output;
+    }
+    if (options.filePath !== undefined) {
+      this.filePath = options.filePath;
+    }
+  }
+
+  /**
+   * 静态方法：记录 debug 日志
+   *
+   * @param namespace - 命名空间，如 'tramber:agent'
+   * @param level - 日志级别
+   * @param message - 消息
+   * @param data - 附加数据
+   */
+  static debug(namespace: string, level: LogLevel, message: string, data?: unknown): void {
+    Logger.getInstance().log(namespace, level, message, data);
+  }
+
+  /**
+   * 静态方法：记录错误
+   */
+  static error(namespace: string, message: string, error?: Error | unknown): void {
+    const errorData = error instanceof Error
+      ? { message: error.message, stack: error.stack }
+      : { error };
+    Logger.debug(namespace, LogLevel.ERROR, message, errorData);
+  }
+
+  private log(namespace: string, level: LogLevel, message: string, data?: unknown): void {
+    if (!this.enabled) return;
+    if (!this.shouldLog(namespace, level)) return;
+
+    const timestamp = new Date().toISOString().split('T')[1].slice(0, 12);
+    const levelTag = this.levelTag(level);
+    const fullMessage = `[${timestamp}] [${namespace}] ${levelTag} ${message}`;
+
+    if (this.output === 'console') {
+      console.log(fullMessage);
+      if (data !== undefined) {
+        console.log(JSON.stringify(data, null, 2));
+      }
+    } else if (this.output === 'file' && this.filePath) {
+      const fs = require('fs');
+      const content = data !== undefined
+        ? `${fullMessage}\n${JSON.stringify(data, null, 2)}\n`
+        : `${fullMessage}\n`;
+      fs.appendFileSync(this.filePath, content);
+    }
+  }
+
+  private shouldLog(namespace: string, level: LogLevel): boolean {
+    // 检查命名空间过滤
+    if (this.namespaces.size > 0 && !this.namespaces.has(namespace)) {
+      return false;
+    }
+
+    // 检查级别
+    const levels = [LogLevel.ERROR, LogLevel.BASIC, LogLevel.VERBOSE, LogLevel.TRACE];
+    return levels.indexOf(level) <= levels.indexOf(this.level);
+  }
+
+  private levelTag(level: LogLevel): string {
+    switch (level) {
+      case LogLevel.ERROR: return '[ERROR]';
+      case LogLevel.BASIC: return '[INFO]';
+      case LogLevel.VERBOSE: return '[VERBOSE]';
+      case LogLevel.TRACE: return '[TRACE]';
+    }
+  }
+}
+
+// 便捷函数
+export function debug(namespace: string, level: LogLevel, message: string, data?: unknown): void {
+  Logger.debug(namespace, level, message, data);
+}
+
+export function debugError(namespace: string, message: string, error?: Error | unknown): void {
+  Logger.error(namespace, message, error);
+}
+```
+
+**2. 各层级命名空间定义**
+
+```typescript
+// 命名空间规范：tramber:<module>[:<submodule>]
+
+export const NAMESPACE = {
+  // CLI 层
+  CLI: 'tramber:cli',
+  CLI_CONFIG: 'tramber:cli:config',
+
+  // SDK 层
+  SDK: 'tramber:sdk',
+  SDK_CLIENT: 'tramber:sdk:client',
+
+  // Provider 层
+  PROVIDER: 'tramber:provider',
+  PROVIDER_ANTHROPIC: 'tramber:provider:anthropic',
+
+  // Agent 层
+  AGENT: 'tramber:agent',
+  AGENT_LOOP: 'tramber:agent:loop',
+  AGENT_CONVERSATION: 'tramber:agent:conversation',
+
+  // Tool 层
+  TOOL: 'tramber:tool',
+  TOOL_REGISTRY: 'tramber:tool:registry',
+  TOOL_FILE: 'tramber:tool:file',
+  TOOL_SEARCH: 'tramber:tool:search',
+  TOOL_EXEC: 'tramber:tool:exec',
+
+  // Permission 层
+  PERMISSION: 'tramber:permission',
+  PERMISSION_CHECKER: 'tramber:permission:checker',
+  PERMISSION_CONFIG: 'tramber:permission:config',
+
+  // Experience 层
+  EXPERIENCE: 'tramber:experience',
+  EXPERIENCE_STORAGE: 'tramber:experience:storage',
+  EXPERIENCE_MANAGER: 'tramber:experience:manager',
+
+  // Scene 层
+  SCENE: 'tramber:scene',
+  SCENE_MANAGER: 'tramber:scene:manager',
+  SCENE_SKILL: 'tramber:scene:skill',
+
+  // Routine 层
+  ROUTINE: 'tramber:routine',
+  ROUTINE_MANAGER: 'tramber:routine:manager',
+} as const;
+```
+
+**3. 各层级使用示例**
+
+```typescript
+// packages/provider/src/anthropic/client.ts
+
+import { debug, debugError, NAMESPACE } from '@tramber/shared/logger';
+
+export class AnthropicProvider {
+  async chat(request: ChatRequest): Promise<ChatResponse> {
+    debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.VERBOSE, 'Sending chat request', {
+      messagesCount: request.messages.length,
+      toolsCount: request.tools?.length ?? 0,
+      model: this.model
+    });
+
+    try {
+      const response = await this.client.messages.create(...);
+
+      debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.TRACE, 'Raw API response', response);
+
+      return {
+        content: response.content[0].text,
+        toolCalls: parseToolCalls(response)
+      };
+    } catch (error) {
+      debugError(NAMESPACE.PROVIDER_ANTHROPIC, 'API request failed', error);
+      throw error;
+    }
+  }
+}
+
+// packages/tool/src/builtin/file.ts
+
+import { debug, debugError, NAMESPACE } from '@tramber/shared/logger';
+
+export const readFileTool: Tool = {
+  id: 'read_file',
+  name: 'Read File',
+  description: '读取文件内容',
+  category: 'file',
+  inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+
+  async execute(input: unknown) {
+    const { path } = input as { path: string };
+
+    debug(NAMESPACE.TOOL_FILE, LogLevel.VERBOSE, 'Reading file', { path });
+
+    try {
+      const content = await fs.readFile(path, 'utf-8');
+
+      debug(NAMESPACE.TOOL_FILE, LogLevel.TRACE, 'File content length', { length: content.length });
+
+      return { success: true, data: content };
+    } catch (error) {
+      debugError(NAMESPACE.TOOL_FILE, `Failed to read file: ${path}`, error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+};
+
+// packages/agent/src/loop.ts
+
+import { debug, debugError, NAMESPACE } from '@tramber/shared/logger';
+
+export class AgentLoop {
+  private async runLoop(context: AgentContext): Promise<AgentLoopResult> {
+    for (let i = 0; i < maxIterations; i++) {
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, `Iteration ${i + 1}/${maxIterations} started`);
+
+      // 调用 LLM
+      const response = await this.callLLM(context);
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, 'LLM response received', {
+        hasToolCalls: (response.toolCalls?.length ?? 0) > 0,
+        contentLength: response.content.length
+      });
+
+      // 处理工具调用
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, `Processing ${response.toolCalls.length} tool calls`);
+
+        for (const toolCall of response.toolCalls) {
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, `Executing tool: ${toolCall.name}`, {
+            parameters: toolCall.parameters
+          });
+
+          try {
+            const result = await this.toolRegistry.execute(toolCall.name, toolCall.parameters);
+            // ...
+          } catch (error) {
+            debugError(NAMESPACE.AGENT_LOOP, `Tool execution failed: ${toolCall.name}`, error);
+          }
+        }
+
+        continue;
+      }
+
+      // 无工具调用，返回
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'No tool calls, returning to user');
+      return { success: true, finalAnswer: response.content };
+    }
+
+    debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Max iterations reached');
+    return { success: false, error: 'Max iterations reached' };
+  }
+}
+
+// packages/sdk/src/client.ts
+
+import { debug, debugError, NAMESPACE } from '@tramber/shared/logger';
+
+export class TramberClient {
+  async initialize(): Promise<void> {
+    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Initializing TramberClient');
+
+    try {
+      // 加载权限配置
+      const permissionConfig = await this.configLoader.load();
+      debug(NAMESPACE.SDK_CLIENT, LogLevel.VERBOSE, 'Permission config loaded', {
+        toolPermissions: Object.keys(permissionConfig.toolPermissions ?? {}),
+        sandboxEnabled: permissionConfig.sandbox?.enabled
+      });
+    } catch (error) {
+      debugError(NAMESPACE.SDK_CLIENT, 'Failed to load permission config', error);
+      // 使用默认配置
+    }
+  }
+}
+
+// packages/client/cli/src/cli.ts
+
+import { Logger, NAMESPACE } from '@tramber/shared/logger';
+
+program
+  .argument('[prompt...]')
+  .option('--debug', 'Enable debug mode')
+  .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace')
+  .option('--debug-namespace <ns...>', 'Debug namespaces: agent, tool, provider, etc.')
+  .option('--debug-file <path>', 'Write debug output to file')
+  .action(async (prompt: string[], options) => {
+    // 配置 Logger
+    if (options.debug) {
+      Logger.getInstance().configure({
+        enabled: true,
+        level: options.debugLevel ?? LogLevel.BASIC,
+        namespaces: options.debugNamespace,
+        output: options.debugFile ? 'file' : 'console',
+        filePath: options.debugFile
+      });
+    }
+
+    debug(NAMESPACE.CLI, LogLevel.BASIC, 'CLI started', {
+      prompt: prompt.join(' '),
+      model: options.model,
+      debugEnabled: options.debug
+    });
+
+    // ... 执行任务
+  });
+```
+
+**4. 环境变量控制**
+
+```bash
+# 启用所有 debug 输出
+export TRAMBER_DEBUG=true
+
+# 启用特定命名空间
+export TRAMBER_DEBUG=true
+export TRAMBER_DEBUG_NAMESPACES=tramber:agent,tramber:tool
+
+# 设置日志级别
+export TRAMBER_DEBUG_LEVEL=verbose
+
+# 输出到文件
+export TRAMBER_DEBUG_OUTPUT=file
+export TRAMBER_DEBUG_FILE=debug.log
+```
+
+**5. CLI 使用示例**
+
+```bash
+# 启用 debug（默认 basic 级别，所有命名空间）
+tramber "读取 package.json" --debug
+
+# 只调试 agent 层
+tramber "修复 bug" --debug --debug-namespace tramber:agent
+
+# 调试多个层
+tramber "运行测试" --debug --debug-namespace tramber:agent --debug-namespace tramber:tool
+
+# 详细级别
+tramber "复杂任务" --debug --debug-level verbose
+
+# 输出到文件
+tramber "任务" --debug --debug-level trace --debug-file debug.log
+```
+
+**6. 输出示例**
+
+```
+[10:30:45.123] [tramber:cli] [INFO] CLI started {"prompt":"读取 package.json"}
+[10:30:45.125] [tramber:sdk:client] [INFO] Initializing TramberClient
+[10:30:45.130] [tramber:permission:config] [INFO] Loading permission config
+[10:30:45.135] [tramber:sdk:client] [INFO] Client initialized
+[10:30:45.140] [tramber:agent:loop] [INFO] Iteration 1/10 started
+[10:30:45.142] [tramber:agent:loop] [VERBOSE] LLM response received {"hasToolCalls":true}
+[10:30:45.145] [tramber:agent:loop] [INFO] Processing 1 tool calls
+[10:30:45.146] [tramber:agent:loop] [VERBOSE] Executing tool: read_file {"path":"package.json"}
+[10:30:45.150] [tramber:tool:file] [VERBOSE] Reading file {"path":"package.json"}
+[10:30:45.155] [tramber:tool:file] [TRACE] File content length {"length":523}
+[10:30:45.160] [tramber:agent:loop] [INFO] Iteration 2/10 started
+[10:30:45.162] [tramber:agent:loop] [INFO] No tool calls, returning to user
+[10:30:45.165] [tramber:sdk:client] [INFO] Task completed successfully
+```
+
+**7. CLI 交互场景设计**
+
+在 CLI 交互模式下，日志系统需要与用户交互输出分离：
+
+```typescript
+// Logger 输出流配置
+private logToConsole(message: string, data?: unknown): void {
+  // 日志输出到 stderr，不干扰 stdout 的正常输出
+  console.error(message);  // 使用 console.error 而非 console.log
+  if (data !== undefined) {
+    console.error(JSON.stringify(data, null, 2));
+  }
+}
+```
+
+**交互模式下的输出示例：**
+
+```bash
+$ tramber --debug --debug-namespace tramber:agent,tramber:tool "修复登录bug"
+
+# Debug 日志（stderr，灰色/黄色）
+[14:32:01.234] [tramber:cli] [INFO] CLI started
+[14:32:01.456] [tramber:agent:loop] [INFO] Iteration 1/10 started
+[14:32:02.123] [tramber:agent:loop] [VERBOSE] LLM response received
+[14:32:02.234] [tramber:agent:loop] [VERBOSE] Executing tool: read_file
+
+# 正常 CLI 输出（stdout，用户可见）
+🔍 分析需求中...
+
+[14:32:03.456] [tramber:tool:file] [VERBOSE] Reading file {"path":"src/login.ts"}
+
+📖 正在读取相关文件...
+
+[14:32:04.123] [tramber:permission:checker] [ERROR] Permission denied for file_write
+[14:32:04.124] [tramber:permission:checker] [ERROR] Required operation: file_write
+[14:32:04.125] [tramber:permission:checker] [ERROR] User permission: confirm
+
+# 交互提示（stdout）
+⚠️  需要权限确认：
+   操作：写入文件 src/login.ts
+   允许？(y/n): y
+
+[14:32:05.234] [tramber:agent:loop] [INFO] Permission granted by user
+
+# 正常进度（stdout）
+✏️  正在修改文件...
+
+[14:32:06.123] [tramber:tool:file] [VERBOSE] File written successfully
+
+✅ 任务完成！
+```
+
+**输出流分离的好处：**
+
+1. **日志捕获**：用户可以单独捕获日志而不影响正常输出
+   ```bash
+   # 只看正常输出，不看日志
+   tramber "任务" --debug 2>/dev/null
+
+   # 保存日志到文件，正常输出显示
+   tramber "任务" --debug 2>debug.log
+
+   # 同时保存两者
+   tramber "任务" --debug > output.txt 2>debug.log
+   ```
+
+2. **管道兼容**：正常输出可以被其他命令处理
+   ```bash
+   tramber "分析代码" --debug 2>/dev/null | grep "TODO"
+   ```
+
+3. **颜色区分**（可选增强）
+   ```typescript
+   // 使用 chalk 或类似库区分日志级别
+   import chalk from 'chalk';
+
+   private formatMessage(level: LogLevel, message: string): string {
+     const colors = {
+       [LogLevel.ERROR]: chalk.red,
+       [LogLevel.BASIC]: chalk.gray,
+       [LogLevel.VERBOSE]: chalk.yellow,
+       [LogLevel.TRACE]: chalk.dim
+     };
+     return colors[level](message);
+   }
+   ```
+
+**交互式 CLI 模式的特殊处理：**
+
+```typescript
+// packages/client/cli/src/interactive.ts
+
+import { Logger, NAMESPACE, LogLevel } from '@tramber/shared/logger';
+
+export async function runInteractiveMode() {
+  // 禁用 console 输出的日志，避免干扰交互
+  Logger.getInstance().configure({
+    enabled: true,
+    output: 'file',  // 日志只写文件
+    filePath: 'tramber-debug.log'
+  });
+
+  // 交互模式下手动记录关键步骤到 stdout
+  console.log('🐛 Debug 模式已启用，日志将保存到 tramber-debug.log');
+
+  // 用户输入
+  const prompt = await readline.question('\n💬 请输入需求: ');
+
+  // 执行任务
+  const result = await client.execute(prompt, {
+    onProgress: (update) => {
+      // 选择性地显示重要信息
+      if (update.type === 'step') {
+        console.log(`\n${update.content}`);
+      }
+    }
+  });
+
+  // 完成后显示日志位置
+  if (result.success) {
+    console.log('\n✅ 任务完成！');
+    console.log(`📄 详细日志: tramber-debug.log`);
+  }
+}
+```
+
+#### 实施检查清单
+
+- [ ] 在 shared/src 创建 logger.ts
+- [ ] 定义命名空间常量
+- [ ] Provider 层添加日志输出
+- [ ] Tool 层添加日志输出
+- [ ] Agent 层添加日志输出
+- [ ] SDK 层添加日志输出
+- [ ] CLI 添加 --debug 相关选项
+- [ ] 支持 TRAMBER_DEBUG 环境变量
+- [ ] 测试 debug 模式输出
+
+---
+
 *文档创建时间: 2026-03-23*
+*最后更新: 2026-03-26 (添加 Phase 9.5 Debug 模式设计)*

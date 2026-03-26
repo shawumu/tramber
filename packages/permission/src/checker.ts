@@ -21,9 +21,15 @@ import type {
 } from '@tramber/shared';
 
 import type { PermissionConfig } from './config-loader.js';
+import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 export class PermissionChecker {
-  constructor(private config: PermissionConfig) {}
+  constructor(private config: PermissionConfig) {
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'PermissionChecker initialized', {
+      sandboxEnabled: config.sandbox?.enabled,
+      toolPermissionsCount: Object.keys(config.toolPermissions ?? {}).length
+    });
+  }
 
   /**
    * 检查工具执行权限
@@ -33,10 +39,16 @@ export class PermissionChecker {
     operation: keyof ToolPermissions,
     input?: unknown
   ): Promise<PermissionCheckResult> {
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.VERBOSE, 'Checking tool permission', {
+      toolId,
+      operation
+    });
+
     const permission = this.config.toolPermissions[operation];
 
     // 未配置权限，使用默认策略
     if (permission === undefined) {
+      debugError(NAMESPACE.PERMISSION_CHECKER, `Operation not configured: ${operation}`);
       return {
         allowed: false,
         requiresConfirmation: false,
@@ -45,13 +57,24 @@ export class PermissionChecker {
       };
     }
 
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Permission config found', {
+      operation,
+      permissionType: typeof permission,
+      permissionValue: Array.isArray(permission) ? `whitelist[${permission.length}]` : String(permission)
+    });
+
     // 处理不同类型的权限值
     if (typeof permission === 'boolean') {
-      return {
+      const result = {
         allowed: permission,
         requiresConfirmation: false,
         reason: permission ? undefined : `操作 ${operation} 被禁止`
       };
+      debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Boolean permission check result', {
+        operation,
+        allowed: result.allowed
+      });
+      return result;
     }
 
     if (Array.isArray(permission)) {
@@ -61,6 +84,12 @@ export class PermissionChecker {
                      (input as Record<string, unknown>).tool;
         if (typeof value === 'string') {
           const allowed = permission.some(allowedCmd => value.startsWith(allowedCmd));
+          debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Whitelist permission check', {
+            operation,
+            command: value,
+            allowed,
+            whitelistSize: permission.length
+          });
           return {
             allowed,
             requiresConfirmation: false,
@@ -68,6 +97,7 @@ export class PermissionChecker {
           };
         }
       }
+      debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Whitelist check failed: no valid command provided');
       return {
         allowed: false,
         requiresConfirmation: false,
@@ -86,20 +116,28 @@ export class PermissionChecker {
     level: PermissionLevel,
     operation: keyof ToolPermissions
   ): PermissionCheckResult {
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Checking permission level', {
+      operation,
+      level
+    });
+
     switch (level) {
       case 'allow':
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Permission allowed', { operation });
         return {
           allowed: true,
           requiresConfirmation: false
         };
 
       case 'confirm':
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Permission requires confirmation', { operation });
         return {
           allowed: true,
           requiresConfirmation: true
         };
 
       case 'deny':
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Permission denied', { operation });
         return {
           allowed: false,
           requiresConfirmation: false,
@@ -108,11 +146,13 @@ export class PermissionChecker {
 
       case 'readonly':
         if (operation === 'file_read') {
+          debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Read operation allowed in readonly mode');
           return {
             allowed: true,
             requiresConfirmation: false
           };
         }
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Write operation denied in readonly mode', { operation });
         return {
           allowed: false,
           requiresConfirmation: false,
@@ -120,6 +160,7 @@ export class PermissionChecker {
         };
 
       default:
+        debugError(NAMESPACE.PERMISSION_CHECKER, `Unknown permission level: ${level}`);
         return {
           allowed: false,
           requiresConfirmation: false,
@@ -136,6 +177,8 @@ export class PermissionChecker {
       return { allowed: true };
     }
 
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.VERBOSE, 'Checking path access', { filePath });
+
     // 规范化路径
     const normalizedPath = path.normalize(filePath);
     const resolvedPath = path.resolve(normalizedPath);
@@ -144,6 +187,10 @@ export class PermissionChecker {
     for (const deniedPath of this.config.sandbox.deniedPaths) {
       const deniedResolved = path.resolve(deniedPath);
       if (resolvedPath.startsWith(deniedResolved) || resolvedPath === deniedResolved) {
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Path access denied: in denied list', {
+          filePath,
+          deniedPath
+        });
         return {
           allowed: false,
           normalizedPath: resolvedPath,
@@ -161,8 +208,15 @@ export class PermissionChecker {
     const cwd = process.cwd();
     if (this.config.sandbox.allowedPaths.includes('./')) {
       if (resolvedPath.startsWith(cwd) || resolvedPath === cwd) {
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Path access allowed: in working directory', {
+          filePath
+        });
         return { allowed: true, normalizedPath: resolvedPath };
       }
+      debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Path access denied: not in working directory', {
+        filePath,
+        cwd
+      });
       return {
         allowed: false,
         normalizedPath: resolvedPath,
@@ -173,10 +227,18 @@ export class PermissionChecker {
     for (const allowedPath of this.config.sandbox.allowedPaths) {
       const allowedResolved = path.resolve(allowedPath);
       if (resolvedPath.startsWith(allowedResolved) || resolvedPath === allowedResolved) {
+        debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Path access allowed: in allowed paths', {
+          filePath,
+          allowedPath
+        });
         return { allowed: true, normalizedPath: resolvedPath };
       }
     }
 
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Path access denied: not in allowed list', {
+      filePath,
+      allowedPaths: this.config.sandbox.allowedPaths
+    });
     return {
       allowed: false,
       normalizedPath: resolvedPath,
@@ -192,15 +254,23 @@ export class PermissionChecker {
       return { safe: true };
     }
 
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.VERBOSE, 'Checking command safety', { command });
+
     // 检查是否匹配禁止模式
     for (const pattern of this.config.sandbox.deniedPatterns) {
       try {
         const regex = new RegExp(pattern, 'i');
         if (regex.test(command)) {
+          const riskLevel = this.getRiskLevel(pattern);
+          debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Command blocked: matched dangerous pattern', {
+            command,
+            pattern,
+            riskLevel
+          });
           return {
             safe: false,
             matchedPattern: pattern,
-            riskLevel: this.getRiskLevel(pattern)
+            riskLevel
           };
         }
       } catch {
@@ -209,6 +279,7 @@ export class PermissionChecker {
       }
     }
 
+    debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Command safety check passed', { command });
     return { safe: true };
   }
 
