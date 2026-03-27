@@ -29,14 +29,20 @@ export interface IOInterface {
   // 初始化 readline
   init(config: IOConfig): readline.Interface;
 
+  // 注册 line 事件监听器
+  onLine(callback: (line: string) => void): void;
+
   // 显示 prompt
   showPrompt(): void;
 
-  // 写入内容到 readline
+  // 写入内容到 stdout
   write(content: string): void;
 
-  // 写入并换行
+  // 写入内容到 stdout 并换行
   writeln(content: string): void;
+
+  // 写入内容到 stderr（用于 debug 日志）
+  writeError(content: string): void;
 
   // 清屏
   clear(): void;
@@ -54,6 +60,7 @@ export interface IOInterface {
 class IOManagerImpl implements IOInterface {
   private static instance: IOManagerImpl;
   private rl: readline.Interface | null = null;
+  private lineCallback: ((line: string) => void) | null = null;
 
   private constructor() {}
 
@@ -81,8 +88,22 @@ class IOManagerImpl implements IOInterface {
       historySize: config.historySize ?? 100
     });
 
+    // 设置 line 事件监听器
+    this.rl.on('line', (line) => {
+      if (this.lineCallback) {
+        this.lineCallback(line);
+      }
+    });
+
     debug(NAMESPACE.CLI, LogLevel.BASIC, '[IO] initialized');
     return this.rl;
+  }
+
+  /**
+   * 注册 line 事件监听器
+   */
+  onLine(callback: (line: string) => void): void {
+    this.lineCallback = callback;
   }
 
   /**
@@ -104,6 +125,13 @@ class IOManagerImpl implements IOInterface {
    */
   writeln(content: string): void {
     console.log(content);
+  }
+
+  /**
+   * 写入内容到 stderr（用于 debug 日志）
+   */
+  writeError(content: string): void {
+    console.error(content);
   }
 
   /**
@@ -135,3 +163,6 @@ class IOManagerImpl implements IOInterface {
  * 导出单例实例
  */
 export const ioManager = IOManagerImpl.getInstance();
+
+// 重新导出 readline 类型供外部使用
+export type { Interface } from 'node:readline';

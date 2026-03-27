@@ -257,10 +257,12 @@ export class AgentLoop {
       }
 
       // 没有工具调用 - 输出给用户，等待回应
-      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'No tool calls, returning final answer to user');
+      // 注意：AI 的文本响应已经通过 onStep({ thinking }) 发送了
+      // finalAnswer 只用于结构化数据结果，不包含 AI 文本
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'No tool calls, finalAnswer is empty (text sent via onStep)');
       return {
         success: true,
-        finalAnswer: content,
+        finalAnswer: '',  // AI 文本已通过 onStep 发送，不再重复放入 finalAnswer
         steps: [...this.steps],
         iterations: i + 1,
         terminatedReason: 'completed'

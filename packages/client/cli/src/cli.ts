@@ -4,35 +4,35 @@
  */
 
 import { Command } from 'commander';
-import chalk from 'chalk';
 import { TramberClient } from '@tramber/sdk';
 import { createContext, loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
 import { createRepl } from './repl.js';
+import { outputManager } from './output-manager.js';
+import { SingleCommandExecutor } from './single-command-executor.js';
 import { Logger, LogLevel, NAMESPACE, debug } from '@tramber/shared';
-import { interactionManager } from './interaction-manager.js';
 
 /**
  * 错误处理函数 - 根据终止原因显示不同的错误信息
  */
 function handleError(error: string | undefined, terminatedReason?: 'completed' | 'max_iterations' | 'error'): void {
   if (!error) {
-    console.error(chalk.red('✗') + ' ' + chalk.white('未知错误'));
+    outputManager.writeErrorResult('未知错误');
     return;
   }
 
   switch (terminatedReason) {
     case 'max_iterations':
-      console.error(chalk.yellow('✗') + ' ' + chalk.white('任务未完成，达到最大迭代次数'));
-      console.log(chalk.gray('  ') + chalk.white(error));
-      console.log(chalk.gray('提示: 使用 --max-iterations 增加限制'));
+      outputManager.writeError('任务未完成，达到最大迭代次数');
+      outputManager.writeln('  ' + error);
+      outputManager.writeln('提示: 使用 --max-iterations 增加限制');
       break;
 
     case 'error':
-      console.error(chalk.red('✗') + ' ' + chalk.white(error));
+      outputManager.writeErrorResult(error);
       break;
 
     default:
-      console.error(chalk.red('✗') + ' ' + chalk.white(error));
+      outputManager.writeErrorResult(error);
   }
 }
 
@@ -91,66 +91,11 @@ program
     });
 
     if (input.length > 0) {
-      // 执行单次命令
+      // 执行单次命令（使用 SingleCommandExecutor）
+      const executor = new SingleCommandExecutor();
       const description = input.join(' ');
 
-      const executeTask = async (): Promise<void> => {
-        const permissionHandler = async (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => {
-          if (options.yes) {
-            debug(NAMESPACE.CLI, LogLevel.BASIC, 'Auto-confirming permission', { operation, tool: toolCall.name });
-            return true;
-          }
-          debug(NAMESPACE.CLI, LogLevel.BASIC, 'Prompting user for permission', { operation, tool: toolCall.name });
-
-          // 构建确认消息，包含具体命令内容和原因
-          let message = `允许操作 "${operation}" (${toolCall.name})`;
-          if (toolCall.parameters.command) {
-            message += `\n命令: ${toolCall.parameters.command}`;
-          }
-          if (reason) {
-            message += `\n原因: ${reason}`;
-          }
-
-          // 使用 InteractionManager 请求输入
-          const answer = await interactionManager.requestInput(message + '? (y/N)');
-          const confirmed = answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
-          debug(NAMESPACE.CLI, LogLevel.BASIC, 'User permission decision', { confirmed });
-          return confirmed;
-        };
-
-        const result = await client.execute(description, {
-          sceneId: context.config.scene,
-          maxIterations: context.config.maxIterations,
-          onProgress: (progress) => {
-            // 显示工具调用和结果
-            if (progress.type === 'step' && progress.content) {
-              console.log(chalk.gray('▸') + ' ' + chalk.white(progress.content));
-            }
-            if (progress.type === 'tool_call' && progress.toolCall) {
-              console.log(chalk.cyan('▸ ') + chalk.white(`[调用 ${progress.toolCall.name}]`));
-              console.log(chalk.gray('  参数: ') + JSON.stringify(progress.toolCall.parameters).slice(0, 200));
-            }
-            if (progress.type === 'tool_result' && progress.toolResult) {
-              if (progress.toolResult.success) {
-                const dataStr = JSON.stringify(progress.toolResult.data ?? 'null');
-                console.log(chalk.green('▸ ') + chalk.white(`[结果] ${dataStr.slice(0, 200)}${dataStr.length > 200 ? '...' : ''}`));
-              } else {
-                console.log(chalk.red('▸ ') + chalk.white(`[错误] ${progress.toolResult.error}`));
-              }
-            }
-          },
-          onPermissionRequired: permissionHandler
-        });
-
-        if (result.success) {
-          console.log(chalk.green('✓') + ' ' + chalk.white(result.result));
-        } else {
-          handleError(result.error, result.terminatedReason);
-          process.exit(1);
-        }
-      };
-
-      await executeTask();
+      await executor.execute(description, client, context, options.yes);
     } else {
       // 启动 REPL
       await createRepl(client, context, { autoConfirm: options.yes });
@@ -170,19 +115,19 @@ program
     const config = await loadConfig(configPath);
 
     if (options.path) {
-      console.log(configPath);
+      outputManager.writeln(configPath);
       return;
     }
 
     if (options.list) {
-      console.log(chalk.cyan.bold('Configuration:'));
-      console.log(JSON.stringify(config, null, 2));
+      outputManager.writeln('Configuration:');
+      outputManager.writeln(JSON.stringify(config, null, 2));
       return;
     }
 
     if (options.get) {
       const value = (config as any)[options.get];
-      console.log(value ?? '');
+      outputManager.writeln(value ?? '');
       return;
     }
 
@@ -192,16 +137,16 @@ program
       if (key && value) {
         (config as any)[key] = value;
         await saveConfig(configPath, config);
-        console.log(chalk.green(`✓ Set ${key} = ${value}`));
+        outputManager.writeln(`✓ Set ${key} = ${value}`);
       } else {
-        console.error(chalk.red('Invalid format. Use: key=value'));
+        outputManager.writeError('Invalid format. Use: key=value');
       }
       return;
     }
 
     // 默认显示所有配置
-    console.log(chalk.cyan.bold('Configuration:'));
-    console.log(JSON.stringify(config, null, 2));
+    outputManager.writeln('Configuration:');
+    outputManager.writeln(JSON.stringify(config, null, 2));
   });
 
 // scene 命令
@@ -212,10 +157,10 @@ program
     const client = new TramberClient();
     const scenes = await client.listScenes();
 
-    console.log(chalk.cyan.bold('Available Scenes:'));
+    outputManager.writeln('Available Scenes:');
     for (const scene of scenes) {
-      console.log(`  ${chalk.green('•')} ${chalk.white(scene.name)} ${chalk.gray(`(${scene.id})`)}`);
-      console.log(`    ${chalk.gray(scene.description)}`);
+      outputManager.writeln(`  • ${scene.name} (${scene.id})`);
+      outputManager.writeln(`    ${scene.description}`);
     }
   });
 
@@ -228,10 +173,10 @@ program
     const client = new TramberClient();
     const skills = await client.listSkills({ sceneId: options.scene });
 
-    console.log(chalk.cyan.bold('Available Skills:'));
+    outputManager.writeln('Available Skills:');
     for (const skill of skills) {
-      console.log(`  ${chalk.green('•')} ${chalk.white(skill.name)} ${chalk.gray(`(${skill.id})`)}`);
-      console.log(`    ${chalk.gray(skill.description)}`);
+      outputManager.writeln(`  • ${skill.name} (${skill.id})`);
+      outputManager.writeln(`    ${skill.description}`);
     }
   });
 
@@ -243,15 +188,15 @@ program
     const client = new TramberClient();
     const routines = await client.listRoutines();
 
-    console.log(chalk.cyan.bold('Available Routines:'));
+    outputManager.writeln('Available Routines:');
     if (routines.length === 0) {
-      console.log('  ' + chalk.gray('No routines available yet.'));
-      console.log('  ' + chalk.gray('Routines are automatically created from successful skills.'));
+      outputManager.writeln('  No routines available yet.');
+      outputManager.writeln('  Routines are automatically created from successful skills.');
     } else {
       for (const routine of routines) {
-        console.log(`  ${chalk.green('•')} ${chalk.white(routine.name)} ${chalk.gray(`(${routine.id})`)}`);
-        console.log(`    ${chalk.gray(routine.description)}`);
-        console.log(`    ${chalk.cyan(`Success rate: ${(routine.stats.successRate * 100).toFixed(0)}%`)}`);
+        outputManager.writeln(`  • ${routine.name} (${routine.id})`);
+        outputManager.writeln(`    ${routine.description}`);
+        outputManager.writeln(`    Success rate: ${(routine.stats.successRate * 100).toFixed(0)}%`);
       }
     }
   });
@@ -266,14 +211,14 @@ program
     const client = new TramberClient();
     const experiences = await client.searchExperiences(query, parseInt(options.limit));
 
-    console.log(chalk.cyan.bold(`Experiences for "${query}":`));
+    outputManager.writeln(`Experiences for "${query}":`);
     if (experiences.length === 0) {
-      console.log('  ' + chalk.gray('No experiences found.'));
+      outputManager.writeln('  No experiences found.');
     } else {
       for (const exp of experiences) {
-        console.log(`  ${chalk.green('•')} ${chalk.white(exp.name)}`);
-        console.log(`    ${chalk.gray(exp.description)}`);
-        console.log(`    ${chalk.cyan(`Effectiveness: ${((exp.effectiveness ?? 0.5) * 100).toFixed(0)}%`)}`);
+        outputManager.writeln(`  • ${exp.name}`);
+        outputManager.writeln(`    ${exp.description}`);
+        outputManager.writeln(`    Effectiveness: ${((exp.effectiveness ?? 0.5) * 100).toFixed(0)}%`);
       }
     }
   });

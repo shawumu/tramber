@@ -9,7 +9,9 @@
  */
 
 import { debug, debugError, LogLevel, NAMESPACE } from '@tramber/shared';
-import readline from 'node:readline';
+import { ioManager, type IOInterface } from './io-manager.js';
+import { outputManager } from './output-manager.js';
+import type { Interface } from './io-manager.js';
 
 /**
  * 交互状态
@@ -29,8 +31,8 @@ type LineHandler = (line: string) => void | Promise<void>;
  * 交互管理器接口
  */
 export interface InteractionManager {
-  // 初始化（设置 readline）
-  init(rl: readline.Interface): void;
+  // 初始化（设置 IO 接口）
+  init(io: IOInterface): void;
 
   // 开始任务（返回 Promise，任务完成时 resolve）
   startTask(task: () => Promise<void>): Promise<void>;
@@ -38,8 +40,8 @@ export interface InteractionManager {
   // 请求用户输入（只能在任务执行期间调用）
   requestInput(prompt: string): Promise<string>;
 
-  // 设置 REPL 的 line 处理函数
-  setLineHandler(handler: LineHandler): void;
+  // 设置空闲状态回调（IDLE 状态收到输入时调用）
+  onIdle(callback: LineHandler): void;
 
   // 获取当前状态
   getState(): InteractionState;
@@ -52,7 +54,7 @@ export interface InteractionManager {
  * 交互管理器实现
  */
 class InteractionManagerImpl implements InteractionManager {
-  private rl: readline.Interface | null = null;
+  private rl: IOInterface | null = null;
   private state: InteractionState = InteractionState.IDLE;
   private lineHandler: LineHandler | null = null;
   private inputResolve: ((value: string) => void) | null = null;
@@ -78,11 +80,11 @@ class InteractionManagerImpl implements InteractionManager {
     }
   }
 
-  init(rl: readline.Interface): void {
-    this.rl = rl;
+  init(io: IOInterface): void {
+    this.rl = io as any; // 保存引用用于 prompt
 
-    // 设置 line 事件监听器
-    this.rl.on('line', async (line) => {
+    // 通过 IOManager 注册 line 监听器
+    io.onLine(async (line) => {
       switch (this.state) {
         case InteractionState.WAITING_INPUT:
           await this.handleWaitingInput(line);
@@ -104,14 +106,6 @@ class InteractionManagerImpl implements InteractionManager {
         case InteractionState.IDLE:
           await this.handleIdle(line);
           break;
-      }
-    });
-
-    // SIGINT 处理
-    this.rl.on('SIGINT', () => {
-      if (this.state === InteractionState.IDLE) {
-        console.log('\nType "exit" to quit.');
-        this.rl?.prompt();
       }
     });
 
@@ -154,33 +148,32 @@ class InteractionManagerImpl implements InteractionManager {
       return;
     }
 
-    this.setState(InteractionState.EXECUTING);
-
-    try {
-      await this.lineHandler(line);
-    } catch (error) {
-      debugError(NAMESPACE.CLI, '[Interaction] line handler error', error);
-    } finally {
-      // 任务执行完成，返回空闲状态
-      this.setState(InteractionState.IDLE);
-      // 延迟显示 prompt，让其他输出先完成
-      setImmediate(() => {
-        this.rl?.prompt();
-      });
-    }
+    // 直接调用 lineHandler，状态管理由 startTask 负责
+    await this.lineHandler(line);
   }
 
   /**
-   * 开始任务
+   * 开始任务（负责完整的状态转换）
    */
   async startTask(task: () => Promise<void>): Promise<void> {
     debug(NAMESPACE.CLI, LogLevel.TRACE, '[Interaction] startTask called');
+
+    // 状态转换: IDLE -> EXECUTING
+    this.setState(InteractionState.EXECUTING);
 
     try {
       await task();
     } catch (error) {
       debugError(NAMESPACE.CLI, '[Interaction] task error', error);
       throw error;
+    } finally {
+      // 状态转换: EXECUTING -> IDLE
+      this.setState(InteractionState.IDLE);
+      // 延迟显示 prompt，让其他输出先完成
+      setImmediate(() => {
+        const io = this.rl as IOInterface;
+        io.showPrompt();
+      });
     }
   }
 
@@ -195,8 +188,8 @@ class InteractionManagerImpl implements InteractionManager {
         resolve(answer);
       };
 
-      // 输出提示
-      process.stdout.write(prompt + ' ');
+      // 输出提示（通过 OutputManager）
+      outputManager.writePrompt(prompt);
 
       // 设置 inputResolve 后，检查是否有缓冲的输入需要处理
       setImmediate(() => this.processPendingInput());
@@ -204,11 +197,11 @@ class InteractionManagerImpl implements InteractionManager {
   }
 
   /**
-   * 设置 REPL 的 line 处理函数
+   * 设置空闲状态回调（IDLE 状态收到输入时调用）
    */
-  setLineHandler(handler: LineHandler): void {
-    this.lineHandler = handler;
-    debug(NAMESPACE.CLI, LogLevel.VERBOSE, '[Interaction] line handler set');
+  onIdle(callback: LineHandler): void {
+    this.lineHandler = callback;
+    debug(NAMESPACE.CLI, LogLevel.VERBOSE, '[Interaction] onIdle callback set');
   }
 
   /**
@@ -223,7 +216,8 @@ class InteractionManagerImpl implements InteractionManager {
    */
   close(): void {
     if (this.rl) {
-      this.rl.close();
+      const io = this.rl as IOInterface;
+      io.close();
       this.rl = null;
     }
     this.state = InteractionState.IDLE;
@@ -233,10 +227,10 @@ class InteractionManagerImpl implements InteractionManager {
   }
 
   /**
-   * 获取 readline（供 REPL 使用）
+   * 获取 IOInterface（供外部使用）
    */
-  getReadline(): readline.Interface | null {
-    return this.rl;
+  getReadline(): IOInterface | null {
+    return this.rl as IOInterface;
   }
 }
 

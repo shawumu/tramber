@@ -10,7 +10,9 @@ import type { TramberClient } from '@tramber/sdk';
 import type { CliContext } from './config.js';
 import { interactionManager } from './interaction-manager.js';
 import { ioManager } from './io-manager.js';
+import { outputManager } from './output-manager.js';
 import { executeTask } from './task.js';
+import { CommandHandler } from './command-handler.js';
 import { debug, LogLevel, NAMESPACE } from '@tramber/shared';
 
 export interface ReplOptions {
@@ -33,6 +35,9 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
     autoConfirm = false
   } = options;
 
+  // 创建命令处理器
+  const commandHandler = new CommandHandler();
+
   // 使用 ioManager 创建 readline
   const rl = ioManager.init({
     input: process.stdin,
@@ -42,11 +47,11 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
     historySize: 100
   });
 
-  // 初始化 interactionManager
-  interactionManager.init(rl);
+  // 初始化 interactionManager（传递 ioManager，不是 rl）
+  interactionManager.init(ioManager);
 
-  // 设置 REPL 的 line 处理函数
-  interactionManager.setLineHandler(async (input) => {
+  // 设置空闲状态回调
+  interactionManager.onIdle(async (input) => {
     debug(NAMESPACE.CLI, LogLevel.VERBOSE, '[REPL] line received', {
       input: input.substring(0, 50)
     });
@@ -60,7 +65,7 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
 
     // 检查退出命令
     if (exitCommand.includes(trimmed.toLowerCase())) {
-      console.log(chalk.gray('Goodbye!'));
+      outputManager.writeln('Goodbye!');
       interactionManager.close();
       return;
     }
@@ -72,7 +77,7 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
 
     // 处理命令
     if (trimmed.startsWith('/')) {
-      await handleCommand(trimmed, client, context);
+      await commandHandler.handle(trimmed, client, context);
       return;
     }
 
@@ -83,8 +88,8 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
   });
 
   // 显示欢迎消息
-  console.log(welcomeMessage);
-  console.log('');
+  outputManager.writeln(welcomeMessage);
+  outputManager.writeln('');
 
   // 开始
   rl.prompt();
@@ -116,138 +121,4 @@ function generateWelcomeMessage(): string {
  */
 function formatPrompt(name: string): string {
   return `${chalk.green(name + ':')} `;
-}
-
-/**
- * 处理命令
- */
-async function handleCommand(command: string, client: TramberClient, context: CliContext) {
-  const parts = command.split(' ');
-  const cmd = parts[0].toLowerCase();
-  const args = parts.slice(1);
-
-  switch (cmd) {
-    case '/help':
-      showHelp();
-      break;
-
-    case '/scene':
-      await handleSceneCommand(args, client, context);
-      break;
-
-    case '/skills':
-      await handleSkillsCommand(client, context);
-      break;
-
-    case '/routines':
-      await handleRoutinesCommand(client, context);
-      break;
-
-    case '/config':
-      handleConfigCommand(args, context);
-      break;
-
-    case '/clear':
-      console.clear();
-      break;
-
-    default:
-      console.log(chalk.red(`Unknown command: ${cmd}`));
-      console.log(chalk.gray('Type /help for available commands.'));
-  }
-}
-
-/**
- * 显示帮助
- */
-function showHelp() {
-  console.log('');
-  console.log(chalk.cyan.bold('Available Commands:'));
-  console.log('  ' + chalk.white('/help') + '      - Show this help message');
-  console.log('  ' + chalk.white('/scene') + '     - List or switch scenes');
-  console.log('  ' + chalk.white('/skills') + '    - List available skills');
-  console.log('  ' + chalk.white('/routines') + '  - List available routines');
-  console.log('  ' + chalk.white('/config') + '    - Show or set configuration');
-  console.log('  ' + chalk.white('/clear') + '     - Clear the screen');
-  console.log('  ' + chalk.white('/exit') + '      - Exit the REPL');
-  console.log('');
-}
-
-/**
- * 处理场景命令
- */
-async function handleSceneCommand(args: string[], client: TramberClient, context: CliContext) {
-  if (args.length === 0) {
-    const scenes = await client.listScenes();
-    console.log('');
-    console.log(chalk.cyan.bold('Available Scenes:'));
-    for (const scene of scenes) {
-      console.log(`  ${chalk.green('•')} ${chalk.white(scene.name)} ${chalk.gray(`(${scene.id})`)}`);
-      console.log(`    ${chalk.gray(scene.description)}`);
-    }
-    console.log('');
-    console.log(`Current: ${chalk.yellow(context.config.scene ?? 'coding')}`);
-    console.log('');
-  } else {
-    const sceneId = args[0];
-    context.config.scene = sceneId;
-    console.log(chalk.green(`✓ Scene switched to: ${sceneId}`));
-  }
-}
-
-/**
- * 处理技能命令
- */
-async function handleSkillsCommand(client: TramberClient, context: CliContext) {
-  const skills = await client.listSkills({ sceneId: context.config.scene });
-  console.log('');
-  console.log(chalk.cyan.bold('Available Skills:'));
-  for (const skill of skills) {
-    console.log(`  ${chalk.green('•')} ${chalk.white(skill.name)} ${chalk.gray(`(${skill.id})`)}`);
-    console.log(`    ${chalk.gray(skill.description)}`);
-  }
-  console.log('');
-}
-
-/**
- * 处理例程命令
- */
-async function handleRoutinesCommand(client: TramberClient, context: CliContext) {
-  const routines = await client.listRoutines();
-  console.log('');
-  console.log(chalk.cyan.bold('Available Routines:'));
-  if (routines.length === 0) {
-    console.log('  ' + chalk.gray('No routines available yet.'));
-    console.log('  ' + chalk.gray('Routines are automatically created from successful skills.'));
-  } else {
-    for (const routine of routines) {
-      console.log(`  ${chalk.green('•')} ${chalk.white(routine.name)} ${chalk.gray(`(${routine.id})`)}`);
-      console.log(`    ${chalk.gray(routine.description)}`);
-      console.log(`    ${chalk.cyan(`Success rate: ${(routine.stats.successRate * 100).toFixed(0)}%`)}`);
-    }
-  }
-  console.log('');
-}
-
-/**
- * 处理配置命令
- */
-function handleConfigCommand(args: string[], context: CliContext) {
-  if (args.length === 0) {
-    console.log('');
-    console.log(chalk.cyan.bold('Current Configuration:'));
-    console.log(`  Provider:   ${chalk.yellow(context.config.provider ?? 'anthropic')}`);
-    console.log(`  Model:      ${chalk.yellow(context.config.model ?? 'claude-sonnet-4-6')}`);
-    console.log(`  Scene:      ${chalk.yellow(context.config.scene ?? 'coding')}`);
-    console.log(`  Max Iter:   ${chalk.yellow(String(context.config.maxIterations ?? 10))}`);
-    console.log(`  Experience: ${chalk.yellow(context.config.enableExperience ? 'enabled' : 'disabled')}`);
-    console.log(`  Routine:    ${chalk.yellow(context.config.enableRoutine ? 'enabled' : 'disabled')}`);
-    console.log('');
-  } else {
-    const [key, value] = args;
-    if (key && value) {
-      (context.config as any)[key] = value;
-      console.log(chalk.green(`✓ Set ${key} = ${value}`));
-    }
-  }
 }

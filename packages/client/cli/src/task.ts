@@ -8,10 +8,10 @@
  * - 处理权限确认
  */
 
-import chalk from 'chalk';
 import type { TramberClient } from '@tramber/sdk';
 import type { CliContext } from './config.js';
 import { interactionManager } from './interaction-manager.js';
+import { outputManager } from './output-manager.js';
 import { debug, LogLevel, NAMESPACE } from '@tramber/shared';
 
 /**
@@ -23,38 +23,24 @@ export async function executeTask(
   context: CliContext,
   autoConfirm = false
 ): Promise<void> {
-  console.log('');
+  outputManager.writeln('');
 
-  // 显示思考状态
-  const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let spinnerIndex = 0;
-  const spinnerInterval = setInterval(() => {
-    process.stdout.write('\r' + chalk.cyan(spinner[spinnerIndex % spinner.length]) + ' Thinking...');
-    spinnerIndex++;
-  }, 100);
+  // 启动 spinner
+  outputManager.startSpinner('思考中...');
 
   try {
     const result = await client.execute(input, {
       sceneId: context.config.scene,
       maxIterations: context.config.maxIterations,
       onProgress: (update) => {
-        if (update.type === 'step') {
-          clearInterval(spinnerInterval);
-          process.stdout.write('\r' + chalk.gray('▸ ') + chalk.white(update.content ?? '') + '\n');
+        if (update.type === 'step' && update.content) {
+          outputManager.writeProgress(update.content);
         }
         if (update.type === 'tool_call' && update.toolCall) {
-          clearInterval(spinnerInterval);
-          process.stdout.write('\r' + chalk.cyan('▸ ') + chalk.white(`[调用 ${update.toolCall.name}]`) + '\n');
-          process.stdout.write(chalk.gray('  参数: ') + JSON.stringify(update.toolCall.parameters).slice(0, 200) + '\n');
+          outputManager.writeToolCall(update.toolCall.name, update.toolCall.parameters);
         }
         if (update.type === 'tool_result' && update.toolResult) {
-          clearInterval(spinnerInterval);
-          if (update.toolResult.success) {
-            const dataStr = JSON.stringify(update.toolResult.data ?? 'null');
-            process.stdout.write('\r' + chalk.green('▸ ') + chalk.white(`[结果] ${dataStr.slice(0, 200)}${dataStr.length > 200 ? '...' : ''}`) + '\n');
-          } else {
-            process.stdout.write('\r' + chalk.red('▸ ') + chalk.white(`[错误] ${update.toolResult.error}`) + '\n');
-          }
+          outputManager.writeToolResult(update.toolResult.success, update.toolResult.data, update.toolResult.error);
         }
       },
       onPermissionRequired: async (toolCall, operation, reason) => {
@@ -63,7 +49,7 @@ export async function executeTask(
         }
 
         // 停止 spinner
-        clearInterval(spinnerInterval);
+        outputManager.stopSpinner();
 
         // 构建确认消息
         let message = `允许操作 "${operation}" (${toolCall.name})`;
@@ -84,22 +70,20 @@ export async function executeTask(
       }
     });
 
-    clearInterval(spinnerInterval);
-    process.stdout.write('\r' + ' '.repeat(50) + '\r');
+    outputManager.stopSpinner();
 
     if (result.success) {
-      console.log(chalk.green('✓ ') + chalk.white('Result:'));
-      console.log(chalk.gray(String(result.result ?? 'Done')));
+      // finalAnswer 只包含结构化数据结果，AI 文本已通过 writeProgress 显示
+      if (result.result && String(result.result).trim() !== '') {
+        outputManager.writeResult(String(result.result));
+      }
     } else {
-      console.log(chalk.red('✗ Error:'));
-      console.log(chalk.gray(result.error ?? 'Unknown error'));
+      outputManager.writeErrorResult(result.error ?? 'Unknown error');
     }
   } catch (error) {
-    clearInterval(spinnerInterval);
-    process.stdout.write('\r' + ' '.repeat(50) + '\r');
-    console.log(chalk.red('✗ Exception:'));
-    console.log(chalk.gray(error instanceof Error ? error.message : String(error)));
+    outputManager.stopSpinner();
+    outputManager.writeException(error instanceof Error ? error.message : String(error));
   }
 
-  console.log('');
+  outputManager.writeln('');
 }
