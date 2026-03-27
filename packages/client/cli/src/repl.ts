@@ -1,23 +1,26 @@
 // packages/client/cli/src/repl.ts
 /**
  * REPL - 交互式命令行界面
+ *
+ * 重构后使用 InteractionManager 管理交互状态
  */
 
-import readline from 'readline';
 import chalk from 'chalk';
 import type { TramberClient } from '@tramber/sdk';
 import type { CliContext } from './config.js';
+import { interactionManager } from './interaction-manager.js';
+import { ioManager } from './io-manager.js';
+import { executeTask } from './task.js';
+import { debug, LogLevel, NAMESPACE } from '@tramber/shared';
 
 export interface ReplOptions {
   prompt?: string;
   welcomeMessage?: string;
   exitCommand?: string[];
-  autoConfirm?: boolean; // 自动确认权限
+  autoConfirm?: boolean;
 }
 
 const HISTORY: string[] = [];
-let historyIndex = -1;
-let permissionInProgress = false; // 权限确认进行中标志
 
 /**
  * 创建 REPL 界面
@@ -30,8 +33,8 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
     autoConfirm = false
   } = options;
 
-  // 创建 readline 接口
-  const rl = readline.createInterface({
+  // 使用 ioManager 创建 readline
+  const rl = ioManager.init({
     input: process.stdin,
     output: process.stdout,
     prompt: formatPrompt(prompt),
@@ -39,60 +42,49 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
     historySize: 100
   });
 
-  // 显示欢迎消息
-  console.log(welcomeMessage);
-  console.log('');
+  // 初始化 interactionManager
+  interactionManager.init(rl);
 
-  // 处理输入
-  rl.on('line', async (input) => {
-    // 如果正在权限确认期间，忽略输入
-    if (permissionInProgress) {
-      return;
-    }
+  // 设置 REPL 的 line 处理函数
+  interactionManager.setLineHandler(async (input) => {
+    debug(NAMESPACE.CLI, LogLevel.VERBOSE, '[REPL] line received', {
+      input: input.substring(0, 50)
+    });
+
     const trimmed = input.trim();
 
     // 添加到历史
     if (trimmed && HISTORY[HISTORY.length - 1] !== trimmed) {
       HISTORY.push(trimmed);
-      historyIndex = HISTORY.length;
     }
 
     // 检查退出命令
     if (exitCommand.includes(trimmed.toLowerCase())) {
       console.log(chalk.gray('Goodbye!'));
-      rl.close();
+      interactionManager.close();
       return;
     }
 
     // 处理空输入
     if (!trimmed) {
-      rl.prompt();
       return;
     }
 
     // 处理命令
     if (trimmed.startsWith('/')) {
       await handleCommand(trimmed, client, context);
-      rl.prompt();
       return;
     }
 
     // 执行任务
-    await executeTask(trimmed, client, context, autoConfirm, rl);
-    rl.prompt();
+    await interactionManager.startTask(async () => {
+      await executeTask(trimmed, client, context, autoConfirm);
+    });
   });
 
-  // 处理 Ctrl+C
-  rl.on('SIGINT', () => {
-    console.log('\n' + chalk.yellow('Type "exit" to quit.'));
-    rl.prompt();
-  });
-
-  // 处理关闭
-  rl.on('close', async () => {
-    await client.close();
-    process.exit(0);
-  });
+  // 显示欢迎消息
+  console.log(welcomeMessage);
+  console.log('');
 
   // 开始
   rl.prompt();
@@ -258,87 +250,4 @@ function handleConfigCommand(args: string[], context: CliContext) {
       console.log(chalk.green(`✓ Set ${key} = ${value}`));
     }
   }
-}
-
-/**
- * 执行任务
- */
-async function executeTask(input: string, client: TramberClient, context: CliContext, autoConfirm = false, mainRl?: readline.ReadLine) {
-  console.log('');
-
-  // 显示思考状态
-  const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  let spinnerIndex = 0;
-  const spinnerInterval = setInterval(() => {
-    process.stdout.write('\r' + chalk.cyan(spinner[spinnerIndex % spinner.length]) + ' Thinking...');
-    spinnerIndex++;
-  }, 100);
-
-  try {
-    const result = await client.execute(input, {
-      sceneId: context.config.scene,
-      maxIterations: context.config.maxIterations,
-      onProgress: (update) => {
-        if (update.type === 'step') {
-          clearInterval(spinnerInterval);
-          process.stdout.write('\r' + chalk.gray('▸ ') + chalk.white(update.content ?? '') + '\n');
-        }
-      },
-      onPermissionRequired: async (toolCall, operation) => {
-        if (autoConfirm) {
-          return true;
-        }
-        // 停止 spinner
-        clearInterval(spinnerInterval);
-
-        // 设置权限确认进行中标志
-        permissionInProgress = true;
-
-        // 暂停主 readline（如果存在）
-        if (mainRl) {
-          mainRl.pause();
-        }
-
-        // 直接询问用户
-        const answer = await new Promise<boolean>((resolve) => {
-          const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout
-          });
-
-          rl.question(`允许操作 "${operation}" (${toolCall.name})? (y/N): `, (answer) => {
-            rl.close();
-            // 恢复主 readline
-            if (mainRl) {
-              mainRl.resume();
-            }
-            // 清除权限确认标志
-            permissionInProgress = false;
-            const confirmed = answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
-            resolve(confirmed);
-          });
-        });
-
-        return answer;
-      }
-    });
-
-    clearInterval(spinnerInterval);
-    process.stdout.write('\r' + ' '.repeat(50) + '\r');
-
-    if (result.success) {
-      console.log(chalk.green('✓ ') + chalk.white('Result:'));
-      console.log(chalk.gray(String(result.result ?? 'Done')));
-    } else {
-      console.log(chalk.red('✗ Error:'));
-      console.log(chalk.gray(result.error ?? 'Unknown error'));
-    }
-  } catch (error) {
-    clearInterval(spinnerInterval);
-    process.stdout.write('\r' + ' '.repeat(50) + '\r');
-    console.log(chalk.red('✗ Exception:'));
-    console.log(chalk.gray(error instanceof Error ? error.message : String(error)));
-  }
-
-  console.log('');
 }

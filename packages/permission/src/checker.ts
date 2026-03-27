@@ -83,25 +83,42 @@ export class PermissionChecker {
         const value = (input as Record<string, unknown>).command ||
                      (input as Record<string, unknown>).tool;
         if (typeof value === 'string') {
-          const allowed = permission.some(allowedCmd => value.startsWith(allowedCmd));
+          const inWhitelist = permission.some(allowedCmd => value.startsWith(allowedCmd));
           debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.TRACE, 'Whitelist permission check', {
             operation,
             command: value,
-            allowed,
+            inWhitelist,
             whitelistSize: permission.length
           });
-          return {
-            allowed,
-            requiresConfirmation: false,
-            reason: allowed ? undefined : `命令 "${value}" 不在白名单中`
-          };
+
+          if (inWhitelist) {
+            // 在白名单中，直接允许
+            return {
+              allowed: true,
+              requiresConfirmation: false
+            };
+          } else {
+            // 不在白名单中，请求用户确认
+            debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Command not in whitelist: requesting user confirmation', {
+              operation,
+              command: value
+            });
+            return {
+              allowed: true,  // 必须为 true 才会触发确认流程
+              requiresConfirmation: true,
+              reason: `命令 "${value}" 不在白名单中，需要用户确认`
+            };
+          }
         }
       }
-      debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Whitelist check failed: no valid command provided');
+      // 白名单检查失败时，请求用户确认
+      debug(NAMESPACE.PERMISSION_CHECKER, LogLevel.BASIC, 'Whitelist check failed: requesting user confirmation', {
+        operation
+      });
       return {
-        allowed: false,
-        requiresConfirmation: false,
-        reason: '需要提供具体命令进行白名单检查'
+        allowed: true,  // 需要设置 allowed: true 才会触发确认
+        requiresConfirmation: true,
+        reason: `操作 ${operation} 不在白名单中，需要用户确认`
       };
     }
 

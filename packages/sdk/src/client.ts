@@ -290,25 +290,27 @@ export class TramberClient {
         maxIterations: options.maxIterations ?? 10,
         onPermissionRequired: options.onPermissionRequired,
         onStep: (step: AgentLoopStep) => {
-          // 发送工具调用进度
+          // 发送工具调用进度（优先级最高）
           if (step.toolCall) {
             onProgress({
               type: 'tool_call',
               iteration: step.iteration,
               toolCall: { name: step.toolCall.name, parameters: step.toolCall.parameters }
             });
+            return; // 有 toolCall 时不再发送 step
           }
 
-          // 发送工具结果进度
+          // 发送工具结果进度（优先级最高）
           if (step.toolResult) {
             onProgress({
               type: 'tool_result',
               iteration: step.iteration,
               toolResult: { success: step.toolResult.success, data: step.toolResult.data, error: step.toolResult.error }
             });
+            return; // 有 toolResult 时不再发送 step
           }
 
-          // 发送普通步骤进度
+          // 发送普通步骤进度（只有没有 toolCall/toolResult 时才发送）
           if (step.thinking || step.content) {
             onProgress({
               type: 'step',

@@ -6,3 +6,4 @@
 export * from './file/index.js';
 export * from './search/index.js';
 export * from './exec/index.js';
+export * from './pwd/index.js';

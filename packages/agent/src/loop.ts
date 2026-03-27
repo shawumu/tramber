@@ -26,7 +26,7 @@ export interface AgentLoopOptions {
   maxIterations?: number;
   onStep?: (step: AgentLoopStep) => void;
   /** 权限确认回调 */
-  onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string) => Promise<boolean>;
+  onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
 }
 
 export interface AgentLoopStep {
@@ -140,6 +140,18 @@ export class AgentLoop {
         if (this.options.permissionChecker) {
           const permissionCheck = await this.checkPermissions(response.toolCalls);
 
+          // 检查权限是否被明确拒绝
+          if (permissionCheck.allowed === false) {
+            debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Permission denied, stopping execution');
+            return {
+              success: false,
+              error: permissionCheck.reason || '权限被拒绝',
+              steps: [...this.steps],
+              iterations: i + 1,
+              terminatedReason: 'error'
+            };
+          }
+
           if (permissionCheck.requiresConfirmation) {
             debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Requesting user permission confirmation');
             // 调用回调请求用户确认
@@ -155,7 +167,8 @@ export class AgentLoop {
 
               const confirmed = await this.options.onPermissionRequired(
                 response.toolCalls[0],
-                permissionCheck.operation || 'unknown'
+                permissionCheck.operation || 'unknown',
+                permissionCheck.reason
               );
 
               debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'User permission decision', { confirmed });
@@ -186,6 +199,18 @@ export class AgentLoop {
           }
         }
 
+        // 执行工具前，发送 step 通知（让用户知道要做什么）
+        for (const toolCall of response.toolCalls) {
+          const preStep: AgentLoopStep = {
+            iteration: i + 1,
+            phase: 'action',
+            content: `调用工具: ${toolCall.name}`,
+            toolCall: { name: toolCall.name, parameters: toolCall.parameters }
+          };
+          this.addStep(preStep);
+          this.options.onStep(preStep);
+        }
+
         const toolResult = await this.executeToolCalls(response.toolCalls);
 
         debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, 'Tool execution completed', {
@@ -193,6 +218,18 @@ export class AgentLoop {
           successful: toolResult.results.filter((r: any) => r.success).length,
           failed: toolResult.results.filter((r: any) => !r.success).length
         });
+
+        // 执行工具后，发送 step 通知（让用户知道结果）
+        for (const result of toolResult.results) {
+          const postStep: AgentLoopStep = {
+            iteration: i + 1,
+            phase: 'verify',
+            content: result.success ? `${result.toolCall.name} 执行成功` : `${result.toolCall.name} 执行失败: ${result.error}`,
+            toolResult: { success: result.success, data: result.data, error: result.error }
+          };
+          this.addStep(postStep);
+          this.options.onStep(postStep);
+        }
 
         // 将助手消息（包含工具调用）添加到上下文
         context.messages.push({
@@ -384,8 +421,10 @@ export class AgentLoop {
    * 检查工具调用权限
    */
   private async checkPermissions(toolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }>): Promise<{
+    allowed?: boolean;
     requiresConfirmation: boolean;
     operation?: string;
+    reason?: string;
   }> {
     if (!this.options.permissionChecker) {
       debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'No permission checker, skipping check');
@@ -432,6 +471,7 @@ export class AgentLoop {
           operation
         });
         return {
+          allowed: true,
           requiresConfirmation: true,
           operation: String(operation)
         };
@@ -444,13 +484,15 @@ export class AgentLoop {
           reason: permissionResult.reason
         });
         return {
-          requiresConfirmation: false
+          allowed: false,
+          requiresConfirmation: false,
+          reason: permissionResult.reason
         };
       }
     }
 
     debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, 'All permissions granted');
-    return { requiresConfirmation: false };
+    return { allowed: true, requiresConfirmation: false };
   }
 
   /**
@@ -494,7 +536,12 @@ export class AgentLoop {
   }
 
   private buildSystemPrompt(): string {
+    const cwd = process.cwd();
     return `你是一个编程助手 ${this.options.agent.name}，${this.options.agent.description}。
+
+## 工作环境
+- 当前工作目录: ${cwd}
+- 文件路径可以是相对路径（相对于当前工作目录）或绝对路径
 
 ## 你的能力
 - 使用工具读取文件、搜索内容、执行命令
@@ -506,6 +553,7 @@ export class AgentLoop {
 2. 工具执行完毕后，系统会自动将结果返回给你
 3. 基于工具结果继续执行任务，或向用户报告进度
 4. 当需要用户提供更多信息时，直接询问
+5. 使用 pwd 工具可以获取当前工作目录
 
 ## 可用工具
 ${this.options.toolRegistry.list().map(t => `- **${t.id}**: ${t.description}`).join('\n')}

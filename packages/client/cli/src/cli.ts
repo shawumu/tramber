@@ -5,11 +5,11 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import inquirer from 'inquirer';
 import { TramberClient } from '@tramber/sdk';
 import { createContext, loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
 import { createRepl } from './repl.js';
 import { Logger, LogLevel, NAMESPACE, debug } from '@tramber/shared';
+import { interactionManager } from './interaction-manager.js';
 
 /**
  * 错误处理函数 - 根据终止原因显示不同的错误信息
@@ -95,22 +95,27 @@ program
       const description = input.join(' ');
 
       const executeTask = async (): Promise<void> => {
-        const permissionHandler = async (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string) => {
+        const permissionHandler = async (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => {
           if (options.yes) {
             debug(NAMESPACE.CLI, LogLevel.BASIC, 'Auto-confirming permission', { operation, tool: toolCall.name });
             return true;
           }
           debug(NAMESPACE.CLI, LogLevel.BASIC, 'Prompting user for permission', { operation, tool: toolCall.name });
-          const { confirm } = await inquirer.prompt([
-            {
-              type: 'confirm',
-              name: 'confirm',
-              message: `允许操作 "${operation}" (${toolCall.name})?`,
-              default: false
-            }
-          ]);
-          debug(NAMESPACE.CLI, LogLevel.BASIC, 'User permission decision', { confirmed: confirm });
-          return confirm;
+
+          // 构建确认消息，包含具体命令内容和原因
+          let message = `允许操作 "${operation}" (${toolCall.name})`;
+          if (toolCall.parameters.command) {
+            message += `\n命令: ${toolCall.parameters.command}`;
+          }
+          if (reason) {
+            message += `\n原因: ${reason}`;
+          }
+
+          // 使用 InteractionManager 请求输入
+          const answer = await interactionManager.requestInput(message + '? (y/N)');
+          const confirmed = answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
+          debug(NAMESPACE.CLI, LogLevel.BASIC, 'User permission decision', { confirmed });
+          return confirmed;
         };
 
         const result = await client.execute(description, {
@@ -122,14 +127,15 @@ program
               console.log(chalk.gray('▸') + ' ' + chalk.white(progress.content));
             }
             if (progress.type === 'tool_call' && progress.toolCall) {
-              console.log(chalk.cyan('▸') + ' ' + chalk.white(`[调用 ${progress.toolCall.name}]`));
-              console.log(chalk.gray('  参数:') + ' ' + JSON.stringify(progress.toolCall.parameters).slice(0, 200));
+              console.log(chalk.cyan('▸ ') + chalk.white(`[调用 ${progress.toolCall.name}]`));
+              console.log(chalk.gray('  参数: ') + JSON.stringify(progress.toolCall.parameters).slice(0, 200));
             }
             if (progress.type === 'tool_result' && progress.toolResult) {
               if (progress.toolResult.success) {
-                console.log(chalk.green('▸') + ' ' + chalk.white(`[结果] ${JSON.stringify(progress.toolResult.data).slice(0, 200)}`));
+                const dataStr = JSON.stringify(progress.toolResult.data ?? 'null');
+                console.log(chalk.green('▸ ') + chalk.white(`[结果] ${dataStr.slice(0, 200)}${dataStr.length > 200 ? '...' : ''}`));
               } else {
-                console.error(chalk.red('▸') + ' ' + chalk.white(`[错误] ${progress.toolResult.error}`));
+                console.log(chalk.red('▸ ') + chalk.white(`[错误] ${progress.toolResult.error}`));
               }
             }
           },

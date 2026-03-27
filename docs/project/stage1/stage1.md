@@ -1505,5 +1505,238 @@ export async function runInteractiveMode() {
 
 ---
 
+### 10.7 CLI IO 架构重构 (Phase 9.6)
+
+#### 问题背景
+
+经过十几轮的迭代修复，CLI IO 系统仍然存在以下问题：
+
+| 问题 | 现象 |
+|------|------|
+| **prompt 提前显示** | 任务还在执行时，REPL prompt 就已经显示 |
+| **输入被错误处理** | 权限确认的输入有时被当作 REPL 命令处理 |
+| **exit 无法正常退出** | 某些情况下 exit 命令无法关闭进程 |
+| **输出混乱** | 工具执行结果和 prompt 的显示顺序不正确 |
+
+#### 架构层面的问题根源
+
+**1. 关注点分离失败**
+
+当前 IOManager 承担了太多职责：
+- **IO 层**：管理 readline 接口
+- **状态层**：管理 REPL/QUESTION 模式
+- **业务层**：处理权限确认逻辑
+- **UI 层**：控制 prompt 显示时机
+
+**2. 生命周期边界模糊**
+
+三个生命周期纠缠在一起：
+- REPL 循环生命周期：何时显示 prompt？何时接受输入？
+- 任务执行生命周期：何时开始？何时完成？
+- 用户交互生命周期：何时暂停 REPL？何时恢复？
+
+**3. 控制流反转缺失**
+
+当前是"主动调用"的架构，层与层之间紧耦合：
+- REPL 需要调用 executeTask
+- executeTask 需要调用 ioManager
+- ioManager 需要调用 lineHandler
+
+**4. 异步完成时机无法追踪**
+
+`onPermissionRequired` 回调在 agentLoop 执行过程中被调用，需要等待用户输入，返回后继续执行。但是 IOManager 不知道：
+- 这个回调什么时候完成
+- 任务什么时候真正结束
+- 什么时候可以安全地显示 prompt
+
+#### 重新设计方案：三层架构 + 状态机
+
+```
+┌─────────────────────────────────────────────┐
+│            REPL Layer (应用层)               │
+│  职责：业务逻辑、命令处理、任务编排           │
+└─────────────────┬───────────────────────────┘
+                  │ 事件驱动
+┌─────────────────▼───────────────────────────┐
+│          Interaction Layer (交互层)          │
+│  职责：管理用户交互、输入分发、状态协调        │
+└─────────────────┬───────────────────────────┘
+                  │ 简单接口
+┌─────────────────▼───────────────────────────┐
+│            IO Layer (IO层)                  │
+│  职责：readline 管理、原始输入输出            │
+└─────────────────────────────────────────────┘
+```
+
+**状态机设计：**
+
+```
+     ┌──────────┐
+     │  IDLE    │ ←─────────────┐
+     └─────┬────┘               │
+           │ startTask          │ taskComplete
+           ↓                    │
+     ┌──────────┐ requestInput  │
+     │ EXECUTING│───────────────>│
+     └──────────┘               │
+           ↑                    │
+           │ inputReceived      │
+           └────────────────────┘
+
+WAITING_INPUT (等待用户输入，如权限确认)
+```
+
+#### 实施步骤
+
+**Step 1: 创建 Interaction Layer**
+
+```typescript
+// packages/client/cli/src/interaction-manager.ts
+
+export enum InteractionState {
+  IDLE = 'idle',
+  EXECUTING = 'executing',
+  WAITING_INPUT = 'waiting_input'
+}
+
+export interface InteractionManager {
+  // 开始任务（返回 Promise，任务完成时 resolve）
+  startTask(task: () => Promise<void>): Promise<void>;
+
+  // 请求用户输入（只能在任务执行期间调用）
+  requestInput(prompt: string): Promise<string>;
+
+  // 状态查询
+  getState(): InteractionState;
+}
+```
+
+**Step 2: 简化 IO Layer**
+
+```typescript
+// packages/client/cli/src/io-manager.ts
+
+export interface IOInterface {
+  // 初始化 readline
+  init(config: IOConfig): void;
+
+  // 注册输入监听器（回调模式，不关心业务逻辑）
+  onLine(callback: (line: string) => void): void;
+
+  // 显示 prompt（由 InteractionManager 决定何时调用）
+  showPrompt(): void;
+
+  // 关闭
+  close(): void;
+}
+```
+
+**Step 3: 重构 REPL Layer**
+
+```typescript
+// packages/client/cli/src/repl.ts
+
+export async function createRepl(client: TramberClient, interaction: InteractionManager) {
+  // 设置输入处理
+  interaction.onInput(async (line) => {
+    await interaction.startTask(async () => {
+      await executeTask(line, client, interaction);
+    });
+  });
+}
+```
+
+**Step 4: 重写 executeTask**
+
+```typescript
+// packages/client/cli/src/task.ts
+
+export async function executeTask(
+  input: string,
+  client: TramberClient,
+  interaction: InteractionManager
+): Promise<void> {
+  const result = await client.execute(input, {
+    onPermissionRequired: async (tool, op, reason) => {
+      const confirmed = await interaction.requestInput(`允许操作 "${op}"?`);
+      return confirmed === 'y';
+    }
+  });
+  // 任务完成后，InteractionManager 自动返回 IDLE 状态并显示 prompt
+}
+```
+
+#### 状态转换规则
+
+| 当前状态 | 允许的转换 | 触发条件 | 转换后动作 |
+|---------|-----------|----------|-----------|
+| IDLE | → EXECUTING | 用户输入 | 调用 lineHandler |
+| EXECUTING | → WAITING_INPUT | requestInput() | 等待用户输入 |
+| EXECUTING | → IDLE | lineHandler 完成 | 显示 prompt |
+| WAITING_INPUT | → EXECUTING | 收到输入 | 继续任务执行 |
+
+#### 核心改进点
+
+1. **分层解耦**：每层只负责自己的职责
+2. **事件驱动**：使用回调而不是主动调用
+3. **状态机管理**：明确的状态和转换规则
+4. **生命周期清晰**：每一层知道自己的开始和结束
+5. **异步完成追踪**：通过 Promise 链追踪任务完成时机
+
+#### 实施优先级
+
+| 优先级 | 任务 | 预估时间 |
+|-------|------|---------|
+| P0 | 创建 InteractionManager | 0.5天 |
+| P0 | 简化 IOManager 为纯 IO 层 | 0.5天 |
+| P0 | 重构 REPL 使用 InteractionManager | 0.5天 |
+| P1 | 重写 executeTask | 0.5天 |
+| P1 | 添加状态转换日志 | 0.2天 |
+| P1 | 集成测试 | 0.3天 |
+| **总计** | | **2.5天** |
+
+#### 实施检查清单
+
+- [ ] 创建 `interaction-manager.ts`
+- [ ] 定义 `InteractionState` 枚举
+- [ ] 实现 `startTask()` 方法
+- [ ] 实现 `requestInput()` 方法
+- [ ] 添加状态转换日志
+- [ ] 简化 `io-manager.ts`，移除业务逻辑
+- [ ] 重构 `repl.ts` 使用 InteractionManager
+- [ ] 重写 `executeTask()` 函数
+- [ ] 添加单元测试
+- [ ] 添加集成测试
+- [ ] 测试权限确认流程
+- [ ] 测试 exit 命令
+- [ ] 测试输出顺序
+- [ ] 更新文档
+
+#### 验收标准
+
+```bash
+# 测试场景 1: 正常任务执行
+$ tramber
+You: 读取 package.json
+[执行中...]
+✓ 任务完成
+You:  ← 正确显示 prompt，时机正确
+
+# 测试场景 2: 权限确认
+You: 修改 package.json
+⚠️  需要权限确认：file_write
+允许? (y/N): y
+[执行中...]
+✓ 任务完成
+You:  ← 权限确认后不提前显示 prompt
+
+# 测试场景 3: exit 命令
+You: exit
+Goodbye!
+$ ← 进程正常退出
+```
+
+---
+
 *文档创建时间: 2026-03-23*
-*最后更新: 2026-03-26 (添加 Phase 9.5 Debug 模式设计)*
+*最后更新: 2026-03-27 (添加 Phase 9.6 CLI IO 架构重构)*

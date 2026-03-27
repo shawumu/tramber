@@ -5,6 +5,7 @@
 
 import { spawn } from 'child_process';
 import type { Tool, ToolResult } from '../../types.js';
+import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 export interface ExecResult {
   command: string;
@@ -48,54 +49,148 @@ export const execTool: Tool = {
       env?: Record<string, string>;
     };
 
+    debug(NAMESPACE.TOOL_EXEC, LogLevel.VERBOSE, 'Executing command', { command, cwd });
+
     return new Promise((resolve) => {
       const [cmd, ...args] = command.split(' ');
-      const timeoutHandle = setTimeout(() => {
+      let child: ReturnType<typeof spawn>;
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      let resolved = false;
+
+      const cleanup = () => {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        if (!resolved) {
+          resolved = true;
+        }
+      };
+
+      timeoutHandle = setTimeout(() => {
+        debug(NAMESPACE.TOOL_EXEC, LogLevel.BASIC, 'Command timed out', { command, timeout });
         child.kill('SIGTERM');
+        cleanup();
         resolve({
           success: false,
-          error: `Command timed out after ${timeout}ms`
+          error: `命令超时 (${timeout}ms): ${command}`
         });
       }, timeout);
 
-      const child = spawn(cmd, args, {
-        cwd,
-        shell: true,
-        env: { ...process.env, ...env },
-        windowsHide: true
-      });
+      try {
+        // Windows 特殊处理：使用 cmd.exe /c 执行内置命令
+        const isWindows = process.platform === 'win32';
+        const spawnCmd = isWindows && !cmd.includes('.exe') && !cmd.includes('.bat')
+          ? `cmd.exe /c ${command}`
+          : command;
 
-      let stdout = '';
-      let stderr = '';
+        debug(NAMESPACE.TOOL_EXEC, LogLevel.BASIC, 'Spawning command', {
+          originalCommand: command,
+          spawnCmd,
+          isWindows,
+          shell: true
+        });
 
-      child.stdout?.on('data', (data) => {
-        stdout += data.toString();
-      });
+        child = spawn(spawnCmd, [], {
+          cwd,
+          shell: true,
+          env: { ...process.env, ...env },
+          windowsHide: true
+        });
 
-      child.stderr?.on('data', (data) => {
-        stderr += data.toString();
-      });
+        debug(NAMESPACE.TOOL_EXEC, LogLevel.BASIC, 'Child process spawned', {
+          pid: child.pid
+        });
 
-      child.on('close', (code) => {
-        clearTimeout(timeoutHandle);
-        resolve({
-          success: code === 0,
-          data: {
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout?.on('data', (data) => {
+          stdout += data.toString();
+          debug(NAMESPACE.TOOL_EXEC, LogLevel.TRACE, 'stdout data', { length: data.toString().length });
+        });
+
+        child.stderr?.on('data', (data) => {
+          stderr += data.toString();
+          debug(NAMESPACE.TOOL_EXEC, LogLevel.TRACE, 'stderr data', { length: data.toString().length });
+        });
+
+        child.on('close', (code) => {
+          debug(NAMESPACE.TOOL_EXEC, LogLevel.BASIC, 'Child process close event', {
+            pid: child.pid,
+            exitCode: code,
+            wasResolved: resolved
+          });
+
+          // 检查是否已经被处理过
+          if (resolved) return;
+
+          // 标记为已处理
+          resolved = true;
+
+          // 清理 timeout
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+          }
+
+          debug(NAMESPACE.TOOL_EXEC, LogLevel.BASIC, 'Command completed successfully', {
             command,
             exitCode: code,
-            stdout,
-            stderr
-          }
-        });
-      });
+            stdoutLength: stdout.length,
+            stderrLength: stderr.length
+          });
 
-      child.on('error', (error) => {
-        clearTimeout(timeoutHandle);
+          resolve({
+            success: code === 0,
+            data: {
+              command,
+              exitCode: code,
+              stdout,
+              stderr
+            }
+          });
+        });
+
+        child.on('error', (error) => {
+          // 检查是否已经被处理过
+          if (resolved) return;
+
+          // 标记为已处理
+          resolved = true;
+
+          // 清理 timeout
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+          }
+
+          const errorMsg = error.message.includes('ENOENT')
+            ? `命令不存在: ${cmd} (${error.message})`
+            : error.message;
+
+          debugError(NAMESPACE.TOOL_EXEC, `Command error: ${errorMsg}`, error);
+          resolve({
+            success: false,
+            error: errorMsg
+          });
+        });
+      } catch (error) {
+        // 检查是否已经被处理过
+        if (resolved) return;
+
+        // 标记为已处理
+        resolved = true;
+
+        // 清理 timeout
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        debugError(NAMESPACE.TOOL_EXEC, 'Spawn error', error);
         resolve({
           success: false,
-          error: error.message
+          error: `启动命令失败: ${errorMsg}`
         });
-      });
+      }
     });
   }
 };

@@ -34,7 +34,7 @@ export interface ExecuteOptions {
   /** 进度回调 */
   onProgress?: (progress: ProgressUpdate) => void;
   /** 权限确认回调 */
-  onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string) => Promise<boolean>;
+  onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
 }
 
 export interface ProgressUpdate {
