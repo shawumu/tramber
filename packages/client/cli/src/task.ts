@@ -6,23 +6,26 @@
  * - 执行单个任务
  * - 处理进度更新
  * - 处理权限确认
+ * - 管理 Conversation（接收并返回，由调用方保存）
  */
 
-import type { TramberClient } from '@tramber/sdk';
+import type { TramberEngine } from '@tramber/sdk';
+import type { Conversation } from '@tramber/agent';
 import type { CliContext } from './config.js';
 import { interactionManager } from './interaction-manager.js';
 import { outputManager } from './output-manager.js';
 import { debug, LogLevel, NAMESPACE } from '@tramber/shared';
 
 /**
- * 执行任务
+ * 执行任务，返回更新后的 conversation 供调用方保存
  */
 export async function executeTask(
   input: string,
-  client: TramberClient,
+  client: TramberEngine,
   context: CliContext,
-  autoConfirm = false
-): Promise<void> {
+  autoConfirm = false,
+  conversation?: Conversation
+): Promise<Conversation> {
   outputManager.writeln('');
 
   // 启动 spinner
@@ -32,7 +35,11 @@ export async function executeTask(
     const result = await client.execute(input, {
       sceneId: context.config.scene,
       maxIterations: context.config.maxIterations,
-      onProgress: (update) => {
+      stream: true,
+      onProgress: (update: any) => {
+        if (update.type === 'text_delta' && update.content) {
+          outputManager.writeTextDelta(update.content);
+        }
         if (update.type === 'step' && update.content) {
           outputManager.writeProgress(update.content);
         }
@@ -43,7 +50,7 @@ export async function executeTask(
           outputManager.writeToolResult(update.toolResult.success, update.toolResult.data, update.toolResult.error);
         }
       },
-      onPermissionRequired: async (toolCall, operation, reason) => {
+      onPermissionRequired: async (toolCall: any, operation: string, reason?: string) => {
         if (autoConfirm) {
           return true;
         }
@@ -52,9 +59,16 @@ export async function executeTask(
         outputManager.stopSpinner();
 
         // 构建确认消息
+        const params = toolCall.parameters || {};
         let message = `允许操作 "${operation}" (${toolCall.name})`;
-        if (toolCall.parameters.command) {
-          message += `\n命令: ${toolCall.parameters.command}`;
+        if (params.path) {
+          message += `\n文件: ${params.path}`;
+        } else if (params.command) {
+          message += `\n命令: ${params.command}`;
+        }
+        if (params.content) {
+          const preview = String(params.content).slice(0, 100);
+          message += `\n内容: ${preview}${String(params.content).length > 100 ? '...' : ''}`;
         }
         if (reason) {
           message += `\n原因: ${reason}`;
@@ -68,22 +82,39 @@ export async function executeTask(
 
         return confirmed;
       }
-    });
+    }, conversation);
 
     outputManager.stopSpinner();
 
     if (result.success) {
-      // finalAnswer 只包含结构化数据结果，AI 文本已通过 writeProgress 显示
       if (result.result && String(result.result).trim() !== '') {
         outputManager.writeResult(String(result.result));
       }
     } else {
       outputManager.writeErrorResult(result.error ?? 'Unknown error');
     }
+
+    return result.conversation!;
   } catch (error) {
     outputManager.stopSpinner();
     outputManager.writeException(error instanceof Error ? error.message : String(error));
+    return conversation ?? createFallbackConversation();
   }
 
   outputManager.writeln('');
+}
+
+function createFallbackConversation(): Conversation {
+  return {
+    id: 'fallback',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    systemPrompt: '',
+    messages: [],
+    tokenUsage: { input: 0, output: 0, total: 0 },
+    totalIterations: 0,
+    projectInfo: { rootPath: process.cwd(), name: 'project' },
+    contextWindow: { maxTokens: 128000, summaryThreshold: 20, maxToolResults: 10 },
+    hasSummary: false
+  };
 }

@@ -5,7 +5,15 @@
       "Bash(pnpm why:*)",
       "Bash(npx tsup:*)",
       "Bash(npx vitest:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(pnpm --filter @tramber/agent build)",
+      "Bash(pnpm --filter @tramber/sdk build)",
+      "Bash(pnpm --filter @tramber/cli build)",
+      "Bash(pnpm build:*)",
+      "WebSearch",
+      "Bash(npm install:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm --filter @tramber/cli add marked)"
     ]
   }
 }

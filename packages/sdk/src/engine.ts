@@ -1,14 +1,16 @@
-// packages/sdk/src/client.ts
+// packages/sdk/src/engine.ts
 /**
- * Tramber Client - 统一客户端接口
+ * Tramber Engine - 核心引擎
  *
- * 提供高层 API 来使用 Tramber 的所有功能
+ * 纯计算引擎，不持有任何会话状态（Conversation）。
+ * 由 Client（CLI/Web/Bot）调用，传入 Conversation，返回更新后的 Conversation。
  */
 
 import { ToolRegistryImpl } from '@tramber/tool';
 import { readFileTool, writeFileTool, editFileTool, globTool, grepTool, execTool } from '@tramber/tool';
 import { AnthropicProvider } from '@tramber/provider';
 import { AgentLoop, type AgentLoopStep } from '@tramber/agent';
+import type { Conversation } from '@tramber/agent';
 import { SceneManager, SkillRegistry, CODING_SCENE_CONFIG, getCodingSkills } from '@tramber/scene';
 import { RoutineManager, RoutineSolidifier } from '@tramber/routine';
 import { ExperienceStorage, ExperienceRetriever, ExperienceManager } from '@tramber/experience';
@@ -16,7 +18,7 @@ import { ConfigLoader, PermissionChecker } from '@tramber/permission';
 import { join } from 'path';
 import type { Task, Scene, Skill, Routine, Experience } from '@tramber/shared';
 import type {
-  TramberClientOptions,
+  TramberEngineOptions,
   ExecuteOptions,
   ProgressUpdate,
   TramberResponse,
@@ -25,9 +27,9 @@ import type {
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 /**
- * Tramber Client - 主要入口点
+ * Tramber Engine - 核心引擎入口点
  */
-export class TramberClient {
+export class TramberEngine {
   private toolRegistry: ToolRegistryImpl;
   private provider: AnthropicProvider | null = null;
   private configLoader: ConfigLoader;
@@ -41,7 +43,7 @@ export class TramberClient {
   private experienceManager: ExperienceManager;
   private agentLoopFactory: (options: any) => AgentLoop;
 
-  private options: TramberClientOptions & {
+  private options: TramberEngineOptions & {
     workspacePath: string;
     configPath: string;
     enableExperience: boolean;
@@ -50,7 +52,7 @@ export class TramberClient {
   private isInitialized = false;
   private permissionConfigLoaded = false;
 
-  constructor(options: TramberClientOptions = {}) {
+  constructor(options: TramberEngineOptions = {}) {
     const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? '';
     const model = options.model ?? process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
     const baseURL = options.baseURL ?? process.env.ANTHROPIC_BASE_URL;
@@ -156,7 +158,7 @@ export class TramberClient {
       return;
     }
 
-    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Initializing TramberClient', {
+    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Initializing TramberEngine', {
       workspacePath: this.options.workspacePath,
       enableExperience: this.options.enableExperience,
       enableRoutine: this.options.enableRoutine
@@ -192,7 +194,7 @@ export class TramberClient {
     }
 
     this.isInitialized = true;
-    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'TramberClient initialized successfully');
+    debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'TramberEngine initialized successfully');
   }
 
   /**
@@ -206,8 +208,11 @@ export class TramberClient {
 
   /**
    * 执行任务
+   *
+   * 接收可选的 conversation 参数，返回更新后的 conversation。
+   * Engine 不持有 conversation，每次执行都是传入+返回。
    */
-  async execute(description: string, options: ExecuteOptions = {}): Promise<TramberResponse> {
+  async execute(description: string, options: ExecuteOptions = {}, conversation?: Conversation): Promise<TramberResponse & { conversation?: Conversation }> {
     await this.ensureInitialized();
 
     debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Executing task', {
@@ -287,7 +292,8 @@ export class TramberClient {
         provider: this.provider!,
         toolRegistry: this.toolRegistry,
         permissionChecker: this.permissionChecker,
-        maxIterations: options.maxIterations ?? 10,
+        maxIterations: options.maxIterations ?? 30,
+        stream: options.stream,
         onPermissionRequired: options.onPermissionRequired,
         onStep: (step: AgentLoopStep) => {
           // 发送工具调用进度（优先级最高）
@@ -310,6 +316,16 @@ export class TramberClient {
             return; // 有 toolResult 时不再发送 step
           }
 
+          // 流式文本增量（由 callLLMStream 产生的 content 字段）
+          if (options.stream && step.content && !step.thinking) {
+            onProgress({
+              type: 'text_delta',
+              iteration: step.iteration,
+              content: step.content
+            });
+            return;
+          }
+
           // 发送普通步骤进度（只有没有 toolCall/toolResult 时才发送）
           if (step.thinking || step.content) {
             onProgress({
@@ -323,7 +339,7 @@ export class TramberClient {
 
       // 执行任务
       onProgress({ type: 'step', content: 'Executing task...' });
-      const result = await agentLoop.execute(task);
+      const result = await agentLoop.execute(task, conversation);
 
       debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Task execution completed', {
         success: result.success,
@@ -342,7 +358,8 @@ export class TramberClient {
         result: result.success ? result.finalAnswer : undefined,
         error: result.success ? undefined : result.error,
         steps,
-        terminatedReason: result.terminatedReason
+        terminatedReason: result.terminatedReason,
+        conversation: result.conversation
       };
 
     } catch (error) {
@@ -350,7 +367,8 @@ export class TramberClient {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
-        steps
+        steps,
+        conversation
       };
     }
   }
@@ -447,7 +465,7 @@ export class TramberClient {
   /**
    * 更新配置
    */
-  updateConfig(options: Partial<TramberClientOptions>): void {
+  updateConfig(options: Partial<TramberEngineOptions>): void {
     const shouldReinitProvider = options.apiKey || options.baseURL;
     Object.assign(this.options, options);
 

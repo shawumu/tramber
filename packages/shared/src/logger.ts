@@ -16,8 +16,17 @@ export interface LoggerOptions {
   enabled?: boolean;
   level?: LogLevel;
   namespaces?: string[];  // 命名空间过滤，如 ['tramber:agent', 'tramber:tool']
-  output?: 'console' | 'file';
+  output?: 'console' | 'file' | 'callback';
   filePath?: string;
+}
+
+/** Debug 日志条目 */
+export interface DebugLogEntry {
+  timestamp: number;
+  level: LogLevel;
+  namespace: string;
+  message: string;
+  data?: unknown;
 }
 
 /**
@@ -83,8 +92,10 @@ export class Logger {
   private enabled: boolean;
   private level: LogLevel;
   private namespaces: Set<string>;
-  private output: 'console' | 'file';
+  private output: 'console' | 'file' | 'callback';
   private filePath?: string;
+  /** 日志回调钩子，用于桥接到 Ink DebugPanel */
+  onLog?: (entry: DebugLogEntry) => void;
 
   private constructor() {
     // 从环境变量读取配置
@@ -157,12 +168,20 @@ export class Logger {
     if (!this.enabled) return;
     if (!this.shouldLog(namespace, level)) return;
 
+    // 触发回调（同步，调用方只做 array.push）
+    this.onLog?.({
+      timestamp: Date.now(),
+      level,
+      namespace,
+      message,
+      data
+    });
+
     const timestamp = new Date().toISOString().split('T')[1].slice(0, 12);
     const levelTag = this.levelTag(level);
     const fullMessage = `[${timestamp}] [${namespace}] ${levelTag} ${message}`;
 
     if (this.output === 'console') {
-      // 输出到 stderr，避免干扰 stdout 的正常输出
       console.error(fullMessage);
       if (data !== undefined) {
         console.error(JSON.stringify(data, null, 2));
@@ -174,6 +193,7 @@ export class Logger {
         : `${fullMessage}\n`;
       fs.appendFileSync(this.filePath, content);
     }
+    // output === 'callback' 时仅走 onLog，不写 console/file
   }
 
   private shouldLog(namespace: string, level: LogLevel): boolean {

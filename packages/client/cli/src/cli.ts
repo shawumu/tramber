@@ -4,37 +4,13 @@
  */
 
 import { Command } from 'commander';
-import { TramberClient } from '@tramber/sdk';
+import { TramberEngine } from '@tramber/sdk';
 import { createContext, loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
-import { createRepl } from './repl.js';
 import { outputManager } from './output-manager.js';
-import { SingleCommandExecutor } from './single-command-executor.js';
+import { render } from 'ink';
+import React from 'react';
+import { App } from './app.js';
 import { Logger, LogLevel, NAMESPACE, debug } from '@tramber/shared';
-
-/**
- * 错误处理函数 - 根据终止原因显示不同的错误信息
- */
-function handleError(error: string | undefined, terminatedReason?: 'completed' | 'max_iterations' | 'error'): void {
-  if (!error) {
-    outputManager.writeErrorResult('未知错误');
-    return;
-  }
-
-  switch (terminatedReason) {
-    case 'max_iterations':
-      outputManager.writeError('任务未完成，达到最大迭代次数');
-      outputManager.writeln('  ' + error);
-      outputManager.writeln('提示: 使用 --max-iterations 增加限制');
-      break;
-
-    case 'error':
-      outputManager.writeErrorResult(error);
-      break;
-
-    default:
-      outputManager.writeErrorResult(error);
-  }
-}
 
 const program = new Command();
 
@@ -59,11 +35,13 @@ program
   .action(async (input: string[], options) => {
     // 配置 Logger（在所有其他操作之前）
     if (options.debug) {
+      // REPL 模式下 debug 走 callback，由 Ink DebugPanel 渲染，不写 console
+      const isRepl = input.length === 0;
       Logger.getInstance().configure({
         enabled: true,
         level: options.debugLevel as LogLevel,
         namespaces: options.debugNamespace,
-        output: options.debugFile ? 'file' : 'console',
+        output: isRepl ? 'callback' : (options.debugFile ? 'file' : 'console'),
         filePath: options.debugFile
       });
     }
@@ -83,22 +61,52 @@ program
     if (options.noExperience) context.config.enableExperience = false;
     if (options.noRoutine) context.config.enableRoutine = false;
 
+    const debugEnabled = !!options.debug;
+
     // 创建客户端
-    const client = new TramberClient({
+    const client = new TramberEngine({
       ...context.config,
       workspacePath: context.workspacePath,
       configPath: context.configPath
     });
 
     if (input.length > 0) {
-      // 执行单次命令（使用 SingleCommandExecutor）
-      const executor = new SingleCommandExecutor();
-      const description = input.join(' ');
-
-      await executor.execute(description, client, context, options.yes);
+      // 单次命令模式 — 直接执行并输出，不启动交互式 UI
+      const userInput = input.join(' ');
+      try {
+        const result = await client.execute(userInput, {
+          sceneId: context.config.scene,
+          maxIterations: context.config.maxIterations,
+          stream: false
+        });
+        if (result.result) {
+          console.log(String(result.result));
+        }
+        if (!result.success && result.error) {
+          console.error('✗ ' + result.error);
+          process.exitCode = 1;
+        }
+      } catch (error) {
+        console.error('✗ ' + (error instanceof Error ? error.message : String(error)));
+        process.exitCode = 1;
+      }
     } else {
-      // 启动 REPL
-      await createRepl(client, context, { autoConfirm: options.yes });
+      // 清屏，给 REPL 全屏感
+      process.stdout.write('\x1B[2J\x1B[H');
+
+      const { waitUntilExit } = render(
+        React.createElement(App, {
+          engine: client,
+          context,
+          autoConfirm: options.yes,
+          debugEnabled
+        }),
+        {
+          patchConsole: true,
+          exitOnCtrlC: false
+        }
+      );
+      await waitUntilExit();
     }
   });
 
@@ -154,7 +162,7 @@ program
   .command('scene')
   .description('List available scenes')
   .action(async () => {
-    const client = new TramberClient();
+    const client = new TramberEngine();
     const scenes = await client.listScenes();
 
     outputManager.writeln('Available Scenes:');
@@ -170,7 +178,7 @@ program
   .description('List available skills')
   .option('-s, --scene <scene>', 'Filter by scene')
   .action(async (options) => {
-    const client = new TramberClient();
+    const client = new TramberEngine();
     const skills = await client.listSkills({ sceneId: options.scene });
 
     outputManager.writeln('Available Skills:');
@@ -185,7 +193,7 @@ program
   .command('routines')
   .description('List available routines')
   .action(async () => {
-    const client = new TramberClient();
+    const client = new TramberEngine();
     const routines = await client.listRoutines();
 
     outputManager.writeln('Available Routines:');
@@ -208,7 +216,7 @@ program
   .argument('<query>', 'Search query')
   .option('-l, --limit <number>', 'Max results', '5')
   .action(async (query: string, options) => {
-    const client = new TramberClient();
+    const client = new TramberEngine();
     const experiences = await client.searchExperiences(query, parseInt(options.limit));
 
     outputManager.writeln(`Experiences for "${query}":`);

@@ -26,6 +26,7 @@ export interface OutputManagerInterface {
 
   // 格式化输出方法
   writeProgress(content: string): void;
+  writeTextDelta(content: string): void;
   writeResult(result: string): void;
   writeErrorResult(error: string): void;
 
@@ -95,6 +96,14 @@ class OutputManagerImpl implements OutputManagerInterface {
   writeProgress(content: string): void {
     this.stopSpinner();
     console.log(chalk.gray('▸') + ' ' + chalk.white(content));
+  }
+
+  /**
+   * 写入流式文本增量（不换行，直接输出）
+   */
+  writeTextDelta(content: string): void {
+    this.stopSpinner();
+    process.stdout.write(content);
   }
 
   /**
@@ -249,4 +258,3 @@ class OutputManagerImpl implements OutputManagerInterface {
  * 导出单例实例
  */
 export const outputManager = OutputManagerImpl.getInstance();
-export type { OutputManagerInterface };

@@ -5,7 +5,7 @@
 
 import type { Task, Scene, Skill, Routine } from '@tramber/shared';
 
-export interface TramberClientOptions {
+export interface TramberEngineOptions {
   /** API Key */
   apiKey?: string;
   /** Provider */
@@ -38,7 +38,7 @@ export interface ExecuteOptions {
 }
 
 export interface ProgressUpdate {
-  type: 'step' | 'thinking' | 'tool_call' | 'tool_result' | 'complete' | 'error';
+  type: 'step' | 'thinking' | 'tool_call' | 'tool_result' | 'complete' | 'error' | 'text_delta';
   iteration?: number;
   content?: string;
   toolCall?: { name: string; parameters: Record<string, unknown> };
@@ -53,6 +53,8 @@ export interface TramberResponse {
   error?: string;
   /** 终止原因 */
   terminatedReason?: 'completed' | 'max_iterations' | 'error';
+  /** 更新后的 Conversation（Engine 无状态，Client 负责保存） */
+  conversation?: import('@tramber/agent').Conversation;
 }
 
 export interface ListOptions {

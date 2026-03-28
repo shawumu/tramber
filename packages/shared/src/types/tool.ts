@@ -18,12 +18,22 @@ export interface Tool {
   execute(input: unknown): Promise<ToolResult>;
 }
 
+export interface ToolInputPropertySchema {
+  type: string;
+  description: string;
+  items?: {
+    type: string;
+    description?: string;
+    properties?: Record<string, ToolInputPropertySchema>;
+    required?: string[];
+  };
+  enum?: string[];
+  default?: unknown;
+}
+
 export interface ToolInputSchema {
   type: 'object';
-  properties: Record<string, {
-    type: string;
-    description: string;
-  }>;
+  properties: Record<string, ToolInputPropertySchema>;
   required: string[];
 }
 

@@ -7,7 +7,7 @@
  * - 分离业务逻辑和 REPL 层
  */
 
-import type { TramberClient } from '@tramber/sdk';
+import type { TramberEngine } from '@tramber/sdk';
 import type { CliContext } from './config.js';
 import { outputManager } from './output-manager.js';
 
@@ -18,7 +18,7 @@ export class CommandHandler {
   /**
    * 处理命令
    */
-  async handle(command: string, client: TramberClient, context: CliContext): Promise<void> {
+  async handle(command: string, client: TramberEngine, context: CliContext): Promise<void> {
     const parts = command.split(' ');
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1);
@@ -73,7 +73,7 @@ export class CommandHandler {
   /**
    * 处理场景命令
    */
-  private async handleScene(args: string[], client: TramberClient, context: CliContext): Promise<void> {
+  private async handleScene(args: string[], client: TramberEngine, context: CliContext): Promise<void> {
     if (args.length === 0) {
       const scenes = await client.listScenes();
       outputManager.writeln('');
@@ -95,7 +95,7 @@ export class CommandHandler {
   /**
    * 处理技能命令
    */
-  private async handleSkills(client: TramberClient, context: CliContext): Promise<void> {
+  private async handleSkills(client: TramberEngine, context: CliContext): Promise<void> {
     const skills = await client.listSkills({ sceneId: context.config.scene });
     outputManager.writeln('');
     outputManager.writeln('Available Skills:');
@@ -109,7 +109,7 @@ export class CommandHandler {
   /**
    * 处理例程命令
    */
-  private async handleRoutines(client: TramberClient, context: CliContext): Promise<void> {
+  private async handleRoutines(client: TramberEngine, context: CliContext): Promise<void> {
     const routines = await client.listRoutines();
     outputManager.writeln('');
     outputManager.writeln('Available Routines:');

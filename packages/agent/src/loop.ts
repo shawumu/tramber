@@ -17,6 +17,14 @@ import type { AIProvider } from '@tramber/provider';
 import type { ToolRegistry } from '@tramber/tool';
 import type { PermissionChecker } from '@tramber/permission';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
+import {
+  createConversation,
+  addMessage,
+  getMessagesForLLM,
+  updateTokenUsage,
+  manageContextWindow,
+  type Conversation
+} from './conversation.js';
 
 export interface AgentLoopOptions {
   agent: Agent;
@@ -27,6 +35,8 @@ export interface AgentLoopOptions {
   onStep?: (step: AgentLoopStep) => void;
   /** 权限确认回调 */
   onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
+  /** 是否流式输出 */
+  stream?: boolean;
 }
 
 export interface AgentLoopStep {
@@ -83,6 +93,7 @@ export class AgentLoop {
   private options: Omit<AgentLoopOptions, 'maxIterations' | 'onStep'> & {
     maxIterations: number;
     onStep: (step: AgentLoopStep) => void;
+    stream: boolean;
   };
   private steps: AgentLoopStep[] = [];
 
@@ -90,6 +101,7 @@ export class AgentLoop {
     this.options = {
       maxIterations: options.maxIterations ?? 10,
       onStep: options.onStep ?? (() => { }),
+      stream: options.stream ?? false,
       agent: options.agent,
       provider: options.provider,
       toolRegistry: options.toolRegistry,
@@ -105,7 +117,7 @@ export class AgentLoop {
    * - 有工具调用 → 执行并继续
    * - 无工具调用 → 输出给用户，等待回应
    */
-  private async runLoop(context: AgentContext): Promise<AgentLoopResult> {
+  private async runLoop(context: AgentContext, conversation: Conversation): Promise<AgentLoopResult> {
     // 从当前迭代次数继续
     const startIteration = context.iterations ?? 0;
 
@@ -123,7 +135,9 @@ export class AgentLoop {
       await this.gatherContext(context);
 
       // Phase 2: 调用 LLM
-      const response = await this.callLLM(context);
+      const response = this.options.stream
+        ? await this.callLLMStream(context)
+        : await this.callLLM(context);
       const content = response.content || '';
 
       debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, 'LLM response received', {
@@ -231,25 +245,29 @@ export class AgentLoop {
           this.options.onStep(postStep);
         }
 
-        // 将助手消息（包含工具调用）添加到上下文
-        context.messages.push({
-          role: 'assistant',
-          content: content || `[调用 ${response.toolCalls.length} 个工具]`
-        });
+        // 将助手消息（包含工具调用）添加到上下文和 conversation
+        const assistantMsg = content || `[调用 ${response.toolCalls.length} 个工具]`;
+        context.messages.push({ role: 'assistant', content: assistantMsg });
+        addMessage(conversation, { role: 'assistant', content: assistantMsg });
 
-        // 将工具结果添加到上下文
+        // 将工具结果添加到上下文和 conversation
+        const MAX_TOOL_RESULT_CHARS = 8000;
         const toolResultsText = toolResult.results.map((r: { toolCall: { name: string }; success: boolean; data?: unknown; error?: string }) => {
           if (r.success) {
             const dataStr = JSON.stringify(r.data ?? 'null');
-            return `- ${r.toolCall.name}: ${dataStr.slice(0, 500)}${dataStr.length > 500 ? '...' : ''}`;
+            return `- ${r.toolCall.name}: ${dataStr.slice(0, MAX_TOOL_RESULT_CHARS)}${dataStr.length > MAX_TOOL_RESULT_CHARS ? '... (truncated)' : ''}`;
           }
-          return `- ${r.toolCall.name}: 失败 - ${r.error}`;
+          // 失败时附加工具的 required 参数提示，帮助 LLM 自我修正
+          const tool = this.options.toolRegistry.get(r.toolCall.name);
+          const requiredHint = tool?.inputSchema?.required?.length
+            ? `\n  Required parameters: ${tool.inputSchema.required.join(', ')}`
+            : '';
+          return `- ${r.toolCall.name}: 失败 - ${r.error}${requiredHint}`;
         }).join('\n');
 
-        context.messages.push({
-          role: 'user',
-          content: `工具执行结果:\n${toolResultsText}`
-        });
+        const toolResultMsg = `工具执行结果:\n${toolResultsText}`;
+        context.messages.push({ role: 'user', content: toolResultMsg });
+        addMessage(conversation, { role: 'user', content: toolResultMsg });
 
         // 继续循环，让 AI 基于工具结果生成新的响应
         debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'Continuing to next iteration');
@@ -285,71 +303,95 @@ export class AgentLoop {
   /**
    * 执行一次用户请求
    *
-   * 自动执行工具调用，直到 AI 不再使用工具
-   * 然后将输出返回给用户，等待用户下一步指令
+   * 支持两种模式：
+   * 1. 传入 conversation → 复用历史上下文（多轮对话）
+   * 2. 不传 conversation → 创建新的（兼容单次命令模式）
+   *
+   * 返回结果中包含更新后的 conversation，供 Client 保存复用
    */
-  async execute(task: Task): Promise<AgentLoopResult> {
+  async execute(task: Task, conversation?: Conversation): Promise<AgentLoopResult & { conversation: Conversation }> {
     this.steps = [];
 
     debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Executing task', {
       taskId: task.id,
-      description: task.description
+      description: task.description,
+      hasConversation: !!conversation,
+      conversationId: conversation?.id
     });
 
     try {
+      // 如果没有 conversation，创建一个新的（兼容单次命令模式）
+      if (!conversation) {
+        conversation = createConversation({
+          systemPrompt: this.buildSystemPrompt(),
+          projectInfo: { rootPath: process.cwd(), name: 'project' }
+        });
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'Created new conversation', {
+          conversationId: conversation.id
+        });
+      }
+
       // 初始化 Agent 上下文
       const context: AgentContext = {
         task,
-        messages: [],
+        messages: getMessagesForLLM(conversation),
         memory: new Map(),
         iterations: 0,
         files: [],
-        projectInfo: {
-          rootPath: process.cwd(),
-          name: 'project'
-        },
-        tokenUsage: {
-          input: 0,
-          output: 0,
-          total: 0
-        },
+        projectInfo: conversation.projectInfo,
+        tokenUsage: { ...conversation.tokenUsage },
         experiences: []
       };
 
-      // 添加系统提示和用户任务
-      context.messages.push({
-        role: 'system',
-        content: this.buildSystemPrompt()
-      });
-      context.messages.push({
-        role: 'user',
-        content: task.description
-      });
+      // 添加当前用户输入
+      context.messages.push({ role: 'user', content: task.description });
+      addMessage(conversation, { role: 'user', content: task.description });
 
       debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'Agent context initialized', {
         messageCount: context.messages.length,
+        conversationMessages: conversation.messages.length,
         projectRoot: context.projectInfo.rootPath
       });
 
+      // 管理上下文窗口（在执行前检查并截断/摘要）
+      await manageContextWindow(conversation, async (prompt: string) => {
+        const response = await this.options.provider.chat({
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+          maxTokens: 1024
+        });
+        return response.content;
+      });
+
       // 运行主循环
-      const result = await this.runLoop(context);
+      const result = await this.runLoop(context, conversation);
+
+      // 累加 conversation 的总迭代次数
+      conversation.totalIterations += result.iterations;
 
       debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Task execution completed', {
         success: result.success,
         iterations: result.iterations,
-        reason: result.terminatedReason
+        reason: result.terminatedReason,
+        conversationMessages: conversation.messages.length
       });
 
-      return result;
+      return { ...result, conversation };
 
     } catch (error) {
       debugError(NAMESPACE.AGENT_LOOP, 'Task execution failed', error);
+      // 如果 conversation 存在，仍然返回它（即使执行失败）
+      const fallbackConversation = conversation ?? createConversation({
+        systemPrompt: this.buildSystemPrompt(),
+        projectInfo: { rootPath: process.cwd(), name: 'project' }
+      });
       return {
         success: false,
         steps: [...this.steps],
         iterations: this.steps.length,
         terminatedReason: 'error',
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        conversation: fallbackConversation
       };
     }
   }
@@ -382,6 +424,78 @@ export class AgentLoop {
       this.options.onStep(step);
 
       return response;
+    } catch (error) {
+      step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
+      this.addStep(step);
+      this.options.onStep(step);
+      return { content: '', toolCalls: undefined };
+    }
+  }
+
+  /**
+   * 流式调用 LLM
+   *
+   * 通过 onStep 逐步发送 text_delta，完整收集所有 tool_calls 后返回。
+   */
+  private async callLLMStream(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }> }> {
+    const streamMethod = this.options.provider.stream;
+    if (!streamMethod) {
+      // Provider 不支持流式，回退到非流式
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Provider does not support streaming, falling back to chat()');
+      return this.callLLM(context);
+    }
+
+    const step: AgentLoopStep = {
+      iteration: context.iterations ?? 0,
+      phase: 'action'
+    };
+
+    try {
+      const toolDefinitions = this.options.toolRegistry.list().map(tool => ({
+        name: tool.id,
+        description: tool.description,
+        inputSchema: tool.inputSchema as unknown as Record<string, unknown>
+      }));
+
+      const chatOptions = {
+        messages: context.messages,
+        tools: toolDefinitions,
+        temperature: this.options.agent.temperature ?? 0.7,
+        maxTokens: this.options.agent.maxTokens ?? 4096
+      };
+
+      let fullContent = '';
+      const allToolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }> = [];
+
+      const stream = streamMethod.call(this.options.provider, chatOptions);
+
+      for await (const chunk of stream) {
+        // 文本增量 — 通过 onStep 的 text_delta 类型发送
+        if (chunk.delta?.content) {
+          const deltaStep: AgentLoopStep = {
+            iteration: context.iterations ?? 0,
+            phase: 'action',
+            content: chunk.delta.content
+          };
+          this.addStep(deltaStep);
+          this.options.onStep(deltaStep);
+          fullContent += chunk.delta.content;
+        }
+
+        // 工具调用 — 完整收集
+        if (chunk.toolCalls) {
+          allToolCalls.push(...chunk.toolCalls);
+        }
+      }
+
+      // 流式结束后，仅内部记录完整内容，不再通过 onStep 重复发送
+      step.thinking = fullContent;
+      this.addStep(step);
+
+      return {
+        content: fullContent,
+        toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined
+      };
     } catch (error) {
       step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
       this.addStep(step);
@@ -514,6 +628,9 @@ export class AgentLoop {
     if (toolId.startsWith('rename') || toolId.startsWith('move')) {
       return 'file_rename';
     }
+    if (toolId === 'glob' || toolId === 'grep') {
+      return 'file_read';
+    }
     return 'command_execute';
   }
 
@@ -534,40 +651,55 @@ export class AgentLoop {
 
     step.content = `Gathered context: ${availableTools.length} tools available`;
     this.addStep(step);
-    this.options.onStep(step);
+    // 不通过 onStep 发送给用户，这是内部调试信息
   }
 
-  private buildSystemPrompt(): string {
+  /**
+   * 构建系统提示词（公开方法，供 Client 创建 Conversation 时使用）
+   */
+  buildSystemPrompt(): string {
     const cwd = process.cwd();
+    const tools = this.options.toolRegistry.list();
+
+    const toolGuidelines = tools.map(t => {
+      let line = `- **${t.id}**: ${t.description}`;
+      if (t.id === 'edit_file') {
+        line += ' (优先使用，支持多段替换)';
+      } else if (t.id === 'write_file') {
+        line += ' (仅用于创建新文件)';
+      }
+      return line;
+    }).join('\n');
+
     return `你是一个编程助手 ${this.options.agent.name}，${this.options.agent.description}。
+
+## 核心准则
+- 修改代码时，优先使用 edit_file，仅创建新文件时使用 write_file
+- 修改文件前必须先读取确认当前内容，不要凭记忆编辑
+- 保持修改最小化，每次只改必要的部分
+- 简洁回答，不要重复用户已知的信息
+- 遇到工具执行错误时，分析原因并尝试恢复，而非直接放弃
+- 如果不确定文件内容，先 read_file 再做决定
+
+## 工具使用规范
+${toolGuidelines}
 
 ## 工作环境
 - 当前工作目录: ${cwd}
-- 文件路径可以是相对路径（相对于当前工作目录）或绝对路径
+- 文件路径支持相对路径（相对于当前工作目录）和绝对路径
 
-## 你的能力
-- 使用工具读取文件、搜索内容、执行命令
-- 分析代码结构，理解项目需求
-- 帮助用户完成编程任务
+## 工作流程
+1. 理解用户需求，分析需要哪些信息
+2. 读取相关文件获取上下文（先读后改）
+3. 规划修改方案，使用 edit_file 精准修改（或 write_file 创建新文件）
+4. 验证修改结果（如需要可执行测试）
+5. 向用户报告结果
 
-## 工作方式
-1. 当需要执行操作时（如读取文件、写入文件、搜索内容），调用相应工具
-2. 工具执行完毕后，系统会自动将结果返回给你
-3. 基于工具结果继续执行任务，或向用户报告进度
-4. 当需要用户提供更多信息时，直接询问
-5. 使用 pwd 工具可以获取当前工作目录
-
-## 可用工具
-${this.options.toolRegistry.list().map(t => `- **${t.id}**: ${t.description}`).join('\n')}
-
-## 示例
-
-用户：读取 package.json
-助手：[调用 read_file 工具]
-系统：[返回文件内容]
-助手：✓ 已读取 package.json，包含以下依赖：
-- react: ^18.2.0
-- typescript: ^5.0.0
+## 错误处理
+- 工具返回失败时，检查错误信息，尝试修正后重试
+- edit_file 的 oldString 未找到时，重新读取文件获取最新内容
+- edit_file 的 oldString 不唯一时，扩大上下文使其唯一
+- 命令执行失败时，检查命令语法和工作目录
 `;
   }
 

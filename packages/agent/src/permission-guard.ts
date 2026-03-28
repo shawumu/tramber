@@ -88,6 +88,9 @@ export class PermissionGuard {
     if (toolId.startsWith('rename') || toolId.startsWith('move')) {
       return 'file_rename';
     }
+    if (toolId === 'glob' || toolId === 'grep') {
+      return 'file_read';
+    }
     return 'command_execute';
   }
 }

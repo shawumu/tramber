@@ -9,7 +9,7 @@
  */
 
 import readline from 'node:readline';
-import type { TramberClient } from '@tramber/sdk';
+import type { TramberEngine } from '@tramber/sdk';
 import type { CliContext } from './config.js';
 import { outputManager } from './output-manager.js';
 import { debug, LogLevel, NAMESPACE } from '@tramber/shared';
@@ -25,7 +25,7 @@ export class SingleCommandExecutor {
    */
   async execute(
     command: string,
-    client: TramberClient,
+    client: TramberEngine,
     context: CliContext,
     autoConfirm: boolean
   ): Promise<void> {
@@ -39,7 +39,11 @@ export class SingleCommandExecutor {
       const result = await client.execute(command, {
         sceneId: context.config.scene,
         maxIterations: context.config.maxIterations,
+        stream: true,
         onProgress: (update) => {
+          if (update.type === 'text_delta' && update.content) {
+            outputManager.writeTextDelta(update.content);
+          }
           if (update.type === 'step' && update.content) {
             outputManager.writeProgress(update.content);
           }
@@ -57,9 +61,16 @@ export class SingleCommandExecutor {
           }
 
           // 构建确认消息
+          const params = toolCall.parameters || {};
           let message = `允许操作 "${operation}" (${toolCall.name})`;
-          if (toolCall.parameters.command) {
-            message += `\n命令: ${toolCall.parameters.command}`;
+          if (params.path) {
+            message += `\n文件: ${params.path}`;
+          } else if (params.command) {
+            message += `\n命令: ${params.command}`;
+          }
+          if (params.content) {
+            const preview = String(params.content).slice(0, 100);
+            message += `\n内容: ${preview}${String(params.content).length > 100 ? '...' : ''}`;
           }
           if (reason) {
             message += `\n原因: ${reason}`;

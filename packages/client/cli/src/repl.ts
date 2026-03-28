@@ -6,7 +6,8 @@
  */
 
 import chalk from 'chalk';
-import type { TramberClient } from '@tramber/sdk';
+import type { TramberEngine } from '@tramber/sdk';
+import type { Conversation } from '@tramber/agent';
 import type { CliContext } from './config.js';
 import { interactionManager } from './interaction-manager.js';
 import { ioManager } from './io-manager.js';
@@ -27,7 +28,7 @@ const HISTORY: string[] = [];
 /**
  * 创建 REPL 界面
  */
-export async function createRepl(client: TramberClient, context: CliContext, options: ReplOptions = {}) {
+export async function createRepl(client: TramberEngine, context: CliContext, options: ReplOptions = {}) {
   const {
     prompt = 'You',
     welcomeMessage = generateWelcomeMessage(),
@@ -37,6 +38,9 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
 
   // 创建命令处理器
   const commandHandler = new CommandHandler();
+
+  // Client 持有 Conversation（跨轮复用）
+  let conversation: Conversation | undefined;
 
   // 使用 ioManager 创建 readline
   const rl = ioManager.init({
@@ -78,12 +82,16 @@ export async function createRepl(client: TramberClient, context: CliContext, opt
     // 处理命令
     if (trimmed.startsWith('/')) {
       await commandHandler.handle(trimmed, client, context);
+      // /clear 命令需要清除 conversation
+      if (trimmed === '/clear') {
+        conversation = undefined;
+      }
       return;
     }
 
-    // 执行任务
+    // 执行任务（传入 conversation，保存返回的）
     await interactionManager.startTask(async () => {
-      await executeTask(trimmed, client, context, autoConfirm);
+      conversation = await executeTask(trimmed, client, context, autoConfirm, conversation);
     });
   });
 
