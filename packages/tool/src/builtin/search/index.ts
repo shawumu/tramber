@@ -46,7 +46,7 @@ export const globTool: Tool = {
 export const grepTool: Tool = {
   id: 'grep',
   name: 'grep',
-  description: 'Search content in files',
+  description: 'Search content in files using regex',
   category: 'search',
   inputSchema: {
     type: 'object',
@@ -57,39 +57,53 @@ export const grepTool: Tool = {
       },
       glob: {
         type: 'string',
-        description: 'File pattern to search in (optional)'
+        description: 'File pattern to search in (default: "**/*.ts")'
+      },
+      path: {
+        type: 'string',
+        description: 'Directory to search in (default: current directory)'
       }
     },
     required: ['pattern']
   },
   async execute(input: unknown): Promise<{ success: boolean; data?: GrepResult[]; error?: string }> {
-    const { pattern, glob: globPattern } = input as { pattern: string; glob?: string };
+    const { pattern, glob: globPattern, path: searchPath } = input as { pattern: string; glob?: string; path?: string };
 
     try {
-      // 简化实现：先用 glob 找文件，再用简单的字符串匹配
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, 'i');
+      } catch {
+        return { success: false, error: `Invalid regex pattern: ${pattern}` };
+      }
+
+      const cwd = searchPath || process.cwd();
+      const filePattern = globPattern || '**/*.{ts,tsx,js,jsx,json,md,yaml,yml,sh,py}';
       let files: string[] = [];
-      if (globPattern) {
-        const globResult = await globSync(globPattern, { cwd: process.cwd() });
+      try {
+        const globResult = await globSync(filePattern, { cwd });
         files = globResult as string[];
+      } catch {
+        return { success: true, data: [] };
       }
 
       const results: GrepResult[] = [];
+      const { readFile } = await import('fs/promises');
 
       for (const file of files) {
         try {
-          const { readFile } = await import('fs/promises');
           const content = await readFile(file, 'utf-8');
           const lines = content.split('\n');
 
-          lines.forEach((line, index) => {
-            if (line.includes(pattern)) {
+          for (let i = 0; i < lines.length; i++) {
+            if (regex.test(lines[i])) {
               results.push({
                 file,
-                line: index + 1,
-                content: line.trim()
+                line: i + 1,
+                content: lines[i].trim()
               });
             }
-          });
+          }
         } catch {
           // 跳过无法读取的文件
         }

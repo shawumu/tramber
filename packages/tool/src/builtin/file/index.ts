@@ -97,7 +97,7 @@ export const writeFileTool: Tool = {
     },
     required: ['path', 'content']
   },
-  async execute(input: unknown): Promise<{ success: boolean; error?: string }> {
+  async execute(input: unknown): Promise<{ success: boolean; data?: { path: string; bytes: number }; error?: string }> {
     const params = input as Record<string, unknown>;
     const path = (params.path ?? params.filePath ?? params.file_path) as string | undefined;
     const content = (params.content ?? params.text ?? '') as string;
@@ -124,13 +124,11 @@ export const writeFileTool: Tool = {
         });
       }
 
-      // 确保目录存在
-      const dir = resolve(filePath, '..');
       await writeFile(filePath, content, 'utf-8');
 
       debug(NAMESPACE.TOOL_FILE, LogLevel.TRACE, 'File written successfully', { filePath });
 
-      return { success: true };
+      return { success: true, data: { path: filePath, bytes: content.length } };
     } catch (error) {
       debugError(NAMESPACE.TOOL_FILE, `Failed to write file: ${path}`, error);
       return {

@@ -1,8 +1,7 @@
 // packages/scene/src/index.ts
 /**
- * Scene Package - 场景和技能管理
+ * Scene Package - 场景管理
  */
 
 export * from './scene-manager.js';
-export * from './skill-registry.js';
 export * from './coding.js';

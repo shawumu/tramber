@@ -13,7 +13,11 @@
       "WebSearch",
       "Bash(npm install:*)",
       "Bash(pnpm add:*)",
-      "Bash(pnpm --filter @tramber/cli add marked)"
+      "Bash(pnpm --filter @tramber/cli add marked)",
+      "Bash(ls k:/workspace/tramber/docs/project/stage*/)",
+      "Bash(pnpm --filter @tramber/skill build)",
+      "Bash(pnpm --filter @tramber/tool build)",
+      "Bash(pnpm --filter @tramber/scene build)"
     ]
   }
 }

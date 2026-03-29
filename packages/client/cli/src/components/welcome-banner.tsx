@@ -9,7 +9,13 @@ interface WelcomeBannerProps {
   commands?: string[][];
 }
 
-export function WelcomeBanner({
+const LOGO = [
+  '  /\\_/\\  ',
+  ' ( o.o ) ',
+  '  > ^ <  ',
+];
+
+export const WelcomeBanner = React.memo(function WelcomeBanner({
   version = '0.2.0',
   sceneName = 'Coding Scene',
   sceneDescription = 'AI Assisted Programming',
@@ -27,22 +33,33 @@ export function WelcomeBanner({
 
   return (
     <Box flexDirection="column" marginY={1}>
-      <Box borderStyle="round" borderColor="cyan" paddingLeft={1} paddingRight={1}>
-        <Box marginY={1}>
-          <Text bold color="cyan">  Welcome to Tramber (MVP v{version})  </Text>
+      <Box borderStyle="round" borderColor="cyan">
+        <Box flexDirection="column" paddingX={2}>
+          {/* Logo + 标题 */}
+          <Box marginY={1}>
+            <Box flexDirection="column" marginRight={2}>
+              {LOGO.map((line, i) => (
+                <Text key={i} color="yellow">{line}</Text>
+              ))}
+            </Box>
+            <Box flexDirection="column" justifyContent="center">
+              <Text bold color="cyan">Tramber v{version}</Text>
+              <Text dimColor>{sceneName} - {sceneDescription}</Text>
+            </Box>
+          </Box>
+          {/* 命令列表 */}
+          <Box marginY={1} flexDirection="column">
+            <Text bold dimColor>Commands:</Text>
+            {commands.map(([cmd, desc]) => (
+              <Text key={cmd}>
+                {'  '}
+                <Text bold color="cyan">{cmd.padEnd(maxLen + 2)}</Text>
+                <Text dimColor>{desc}</Text>
+              </Text>
+            ))}
+          </Box>
         </Box>
-        <Text>  {sceneName} - {sceneDescription}</Text>
-        <Box marginY={1} />
-        <Text bold>  Commands:</Text>
-        {commands.map(([cmd, desc]) => (
-          <Text key={cmd}>
-            {'    '}
-            <Text bold>{cmd.padEnd(maxLen + 2)}</Text>
-            <Text dimColor>- {desc}</Text>
-          </Text>
-        ))}
-        <Box marginY={1} />
       </Box>
     </Box>
   );
-}
+});

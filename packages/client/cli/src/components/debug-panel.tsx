@@ -6,7 +6,7 @@
  * 避免与 InputBox 的 useInput 冲突。
  */
 
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import type { DebugLogEntry } from '@tramber/shared';
 import type { FilterLevel } from '../hooks/use-debug-logs.js';
@@ -40,7 +40,7 @@ const FILTER_OPTIONS: { label: string; value: FilterLevel }[] = [
 
 const DISPLAY_LINES = 15;
 
-export function DebugPanel({ logs, totalCount, filterLevel, visible }: DebugPanelProps) {
+export const DebugPanel = React.memo(function DebugPanel({ logs, totalCount, filterLevel, visible }: DebugPanelProps) {
   // 所有 hooks 必须在条件判断之前
   const displayLogs = useMemo(() => logs.slice(-DISPLAY_LINES), [logs]);
 
@@ -86,4 +86,4 @@ export function DebugPanel({ logs, totalCount, filterLevel, visible }: DebugPane
       )}
     </Box>
   );
-}
+});

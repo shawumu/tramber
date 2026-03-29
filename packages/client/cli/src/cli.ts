@@ -11,6 +11,8 @@ import { render } from 'ink';
 import React from 'react';
 import { App } from './app.js';
 import { Logger, LogLevel, NAMESPACE, debug } from '@tramber/shared';
+import { mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
 
 const program = new Command();
 
@@ -28,27 +30,53 @@ program
   .option('--no-experience', 'Disable experience')
   .option('--no-routine', 'Disable routine')
   .option('-y, --yes', 'Auto-confirm all permissions')
-  .option('--debug', 'Enable debug mode')
+  .option('--debug', 'Enable debug mode (console + file + panel)')
   .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace', 'basic')
   .option('--debug-namespace <ns...>', 'Debug namespaces: agent, tool, provider, permission, sdk, etc.')
-  .option('--debug-file <path>', 'Write debug output to file')
+  .option('--debug-file', 'Write debug output to file only (no panel)')
+  .option('--debug-panel', 'Show DebugPanel only (no file)')
   .action(async (input: string[], options) => {
     // 配置 Logger（在所有其他操作之前）
-    if (options.debug) {
-      // REPL 模式下 debug 走 callback，由 Ink DebugPanel 渲染，不写 console
+    const debugLogEnabled = options.debug || options.debugFile || options.debugPanel;
+    const debugShowPanel = options.debug || options.debugPanel;
+
+    if (debugLogEnabled) {
       const isRepl = input.length === 0;
+
+      // 自动设置日志文件路径
+      const logDir = join(process.cwd(), '.tramber', 'logs');
+      if (!existsSync(logDir)) {
+        mkdirSync(logDir, { recursive: true });
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFilePath = join(logDir, `tramber-${timestamp}.log`);
+
+      // 决定输出模式
+      let output: 'console' | 'file' | 'callback' | 'all';
+      if (options.debug) {
+        output = 'all';
+      } else if (options.debugFile) {
+        output = 'file';
+      } else if (options.debugPanel) {
+        output = isRepl ? 'callback' : 'console';
+      } else {
+        output = isRepl ? 'callback' : 'console';
+      }
+
       Logger.getInstance().configure({
         enabled: true,
         level: options.debugLevel as LogLevel,
         namespaces: options.debugNamespace,
-        output: isRepl ? 'callback' : (options.debugFile ? 'file' : 'console'),
-        filePath: options.debugFile
+        output,
+        filePath: logFilePath
       });
+
+      debug(NAMESPACE.CLI, LogLevel.BASIC, 'Debug mode enabled', { output, logFilePath });
     }
 
     debug(NAMESPACE.CLI, LogLevel.BASIC, 'CLI started', {
       input: input.join(' ') || '[REPL mode]',
-      debugEnabled: options.debug
+      debugLogEnabled
     });
 
     const context = await createContext({
@@ -60,8 +88,6 @@ program
     if (options.model) context.config.model = options.model;
     if (options.noExperience) context.config.enableExperience = false;
     if (options.noRoutine) context.config.enableRoutine = false;
-
-    const debugEnabled = !!options.debug;
 
     // 创建客户端
     const client = new TramberEngine({
@@ -99,7 +125,7 @@ program
           engine: client,
           context,
           autoConfirm: options.yes,
-          debugEnabled
+          debugEnabled: debugShowPanel
         }),
         {
           patchConsole: true,
@@ -179,12 +205,18 @@ program
   .option('-s, --scene <scene>', 'Filter by scene')
   .action(async (options) => {
     const client = new TramberEngine();
-    const skills = await client.listSkills({ sceneId: options.scene });
+    await client.initialize();
+    const skills = client.listUserSkills();
 
-    outputManager.writeln('Available Skills:');
-    for (const skill of skills) {
-      outputManager.writeln(`  • ${skill.name} (${skill.id})`);
-      outputManager.writeln(`    ${skill.description}`);
+    if (skills.length === 0) {
+      outputManager.writeln('No skills installed. Add skills to .tramber/skills/');
+    } else {
+      outputManager.writeln('Installed Skills:');
+      for (const skill of skills) {
+        const status = skill.enabled ? '✓' : '✗';
+        const ver = skill.version ? ` v${skill.version}` : '';
+        outputManager.writeln(`  ${status} ${skill.slug}${ver}  ${skill.description}`);
+      }
     }
   });
 

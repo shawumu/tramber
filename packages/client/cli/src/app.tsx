@@ -17,7 +17,7 @@
  *   改为全部动态渲染，Ink 的 virtual DOM 会对比差异只更新变化部分。
  */
 
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import type { TramberEngine } from '@tramber/sdk';
 import type { Conversation } from '@tramber/agent';
@@ -35,10 +35,11 @@ const FILTER_CYCLE: FilterLevel[] = ['all', 'error', 'warn'];
 const MAX_RENDER_MESSAGES = 80;
 
 /** 估算单条消息占用的终端行数 */
-function estimateMessageLines(item: MessageItemType): number {
+function estimateMessageLines(item: MessageItemType, termWidth: number): number {
+  const width = termWidth ?? 80;
   switch (item.type) {
     case 'user':
-      return 1 + Math.ceil((item.content.length + 5) / (process.stdout.columns ?? 80));
+      return 1 + Math.ceil((item.content.length + 5) / width);
     case 'assistant': {
       // Markdown 渲染后行数 ≈ 原始换行数 + 边框/标签开销
       const codeBlockCount = (item.content.match(/```/g) || []).length;
@@ -52,12 +53,41 @@ function estimateMessageLines(item: MessageItemType): number {
     case 'error':
       return 4; // 边框 + 内容
     case 'system':
-      return 1;
+      // 系统消息按实际换行数计算
+      return item.content.split('\n').length;
     case 'tool_result':
       return 0;
     default:
       return 2;
   }
+}
+
+/** 实时计算权限确认框占用的行数 */
+function calcPermissionLines(req: PermissionRequest | null, termWidth: number): number {
+  if (!req) return 0;
+  const width = termWidth ?? 80;
+  // 基础行数：边框(2) + 标题(1) + 操作描述(1) + 提示(1) = 5
+  let lines = 5;
+  // 文件路径(如有): 1 行
+  if (req.toolCall.parameters.path != null) {
+    const pathStr = String(req.toolCall.parameters.path);
+    lines += Math.ceil(pathStr.length / width);
+  }
+  // 命令(如有): 可能多行
+  if (req.toolCall.parameters.command != null) {
+    const cmdStr = String(req.toolCall.parameters.command);
+    lines += Math.ceil((cmdStr.length + 10) / width);
+  }
+  // 原因(如有): 1 行
+  if (req.reason) {
+    lines += Math.ceil((req.reason.length + 10) / width);
+  }
+  // 内容预览(如有): 标题1行 + 最多5行内容
+  if (req.toolCall.parameters.content != null) {
+    const contentLines = Math.min(String(req.toolCall.parameters.content).split('\n').length, 5);
+    lines += 1 + contentLines;
+  }
+  return lines;
 }
 
 interface AppProps {
@@ -98,23 +128,29 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
   const pendingToolCallsRef = useRef<Map<string, MessageItemType>>(new Map());
 
   // 按行数截断消息，防止溢出挤掉 InputBox
-  // 固定开销：StatusBar(3) + InputBox(3) + 安全边距(2) = 8
-  // DebugPanel 可见时额外占：标题(1) + 显示行数(最多15) + 边框(2) = 18
+  // 固定开销：
+  //   - 全局边框: 2 行
+  //   - StatusBar: 2 行
+  //   - InputBox: 3 行
+  //   - 安全边距: 2 行
+  //   总计基础: 9 行
+  const termWidth = stdout?.columns ?? 80;
   const debugPanelLines = (debugEnabled && debugState.visible) ? 18 : 0;
+  const permissionLines = calcPermissionLines(permissionRequest, termWidth);
   const displayMessages = useMemo(() => {
-    const available = termHeight - 8 - debugPanelLines;
+    const available = termHeight - 9 - debugPanelLines - permissionLines;
     const all = messages.slice(-MAX_RENDER_MESSAGES);
     // 从最新消息往前累加，超出可用行数就截断
     let totalLines = 0;
     const fit: MessageItemType[] = [];
     for (let i = all.length - 1; i >= 0; i--) {
-      const lines = estimateMessageLines(all[i]);
+      const lines = estimateMessageLines(all[i], termWidth);
       if (totalLines + lines > available && fit.length > 0) break;
       totalLines += lines;
       fit.unshift(all[i]);
     }
     return fit;
-  }, [messages, termHeight, debugPanelLines]);
+  }, [messages, termHeight, termWidth, debugPanelLines, permissionLines]);
 
   // 处理用户输入
   const handleInput = useCallback(async (input: string) => {
@@ -139,6 +175,54 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
         return;
       }
       if (cmd === 'help') return;
+      if (cmd === 'skills' || cmd.startsWith('skills ')) {
+        const sub = cmd.slice(6).trim();
+        const skills = engine.listUserSkills();
+        if (sub.startsWith('enable ')) {
+          const slug = sub.slice(7).trim();
+          const skill = skills.find(s => s.slug === slug);
+          if (skill) {
+            await engine.enableSkill(slug);
+            const msg: MessageItemType = { id: generateId(), type: 'system', content: `✓ Skill "${skill.name}" enabled`, timestamp: new Date() };
+            messagesRef.current = [...messagesRef.current, msg];
+            setMessages([...messagesRef.current]);
+          } else {
+            const msg: MessageItemType = { id: generateId(), type: 'system', content: `✗ Skill "${slug}" not found`, timestamp: new Date() };
+            messagesRef.current = [...messagesRef.current, msg];
+            setMessages([...messagesRef.current]);
+          }
+        } else if (sub.startsWith('disable ')) {
+          const slug = sub.slice(8).trim();
+          const skill = skills.find(s => s.slug === slug);
+          if (skill) {
+            await engine.disableSkill(slug);
+            const msg: MessageItemType = { id: generateId(), type: 'system', content: `✓ Skill "${skill.name}" disabled`, timestamp: new Date() };
+            messagesRef.current = [...messagesRef.current, msg];
+            setMessages([...messagesRef.current]);
+          } else {
+            const msg: MessageItemType = { id: generateId(), type: 'system', content: `✗ Skill "${slug}" not found`, timestamp: new Date() };
+            messagesRef.current = [...messagesRef.current, msg];
+            setMessages([...messagesRef.current]);
+          }
+        } else {
+          // /skills — 列表
+          if (skills.length === 0) {
+            const msg: MessageItemType = { id: generateId(), type: 'system', content: 'No skills installed. Add skills to .tramber/skills/', timestamp: new Date() };
+            messagesRef.current = [...messagesRef.current, msg];
+            setMessages([...messagesRef.current]);
+          } else {
+            const lines = skills.map(s => {
+              const status = s.enabled ? '✓' : '✗';
+              const ver = s.version ? ` v${s.version}` : '';
+              return `  ${status} ${s.slug}${ver}  ${s.description}`;
+            }).join('\n');
+            const msg: MessageItemType = { id: generateId(), type: 'system', content: `Installed Skills:\n${lines}`, timestamp: new Date() };
+            messagesRef.current = [...messagesRef.current, msg];
+            setMessages([...messagesRef.current]);
+          }
+        }
+        return;
+      }
       if (cmd === 'debug' && debugEnabled) {
         debugState.toggleVisible();
         return;
@@ -150,6 +234,26 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
     setStreamingText('');
     pendingToolCallsRef.current.clear();
     setActiveTool(null);
+
+    // 流式文本批量刷新：80ms 合并多个 token 为一次 setState，降低刷新频率
+    let streamTimer: ReturnType<typeof setInterval> | null = null;
+    const startStreamBatch = () => {
+      if (!streamTimer) {
+        streamTimer = setInterval(() => {
+          if (streamingRef.current) {
+            setStreamingText(streamingRef.current);
+          }
+        }, 80);
+      }
+    };
+    const stopStreamBatch = () => {
+      if (streamTimer) {
+        clearInterval(streamTimer);
+        streamTimer = null;
+      }
+      // 最终同步一次，确保不丢内容
+      setStreamingText(streamingRef.current);
+    };
 
     const userMsg: MessageItemType = {
       id: generateId(),
@@ -174,7 +278,7 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
             case 'text_delta':
               if (update.content) {
                 streamingRef.current += update.content;
-                setStreamingText(streamingRef.current);
+                startStreamBatch();
               }
               break;
 
@@ -193,6 +297,7 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
                 };
                 pendingToolCallsRef.current.set(update.toolCall.name, toolMsg);
                 setActiveTool(toolMsg);
+                streamingRef.current = '';
                 setStreamingText('');
               }
               break;
@@ -219,6 +324,9 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
             case 'step':
             case 'complete':
             case 'error':
+              // 新迭代/完成/出错时清空流式缓冲，防止跨轮次文本残留
+              streamingRef.current = '';
+              setStreamingText('');
               break;
           }
         },
@@ -229,6 +337,8 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
           });
         }
       }, conversation);
+
+      stopStreamBatch();
 
       // 完成后更新 messages
       if (streamingRef.current) {
@@ -261,6 +371,7 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
       }
 
     } catch (error) {
+      stopStreamBatch();
       messagesRef.current = [...messagesRef.current, {
         id: generateId(), type: 'error', content: error instanceof Error ? error.message : String(error), timestamp: new Date()
       }];
@@ -324,79 +435,113 @@ export function App({ engine, context, autoConfirm = false, debugEnabled = false
 
   return (
     <Box flexDirection="column" height={termHeight}>
-      <StatusBar
-        scene={context.config.scene}
-        tokenUsage={tokenUsage}
-        iteration={iteration}
-        maxIterations={context.config.maxIterations ?? 30}
-        isExecuting={isExecuting}
-        currentTool={currentToolDisplay}
-      />
+      {/* 全局边框 */}
+      <Box flexDirection="column" borderStyle="single" borderColor="cyan" flexGrow={1}>
+        {/* 顶部状态栏 */}
+        <Box flexShrink={0}>
+          <StatusBar
+            scene={context.config.scene}
+            tokenUsage={tokenUsage}
+            iteration={iteration}
+            maxIterations={context.config.maxIterations ?? 30}
+            isExecuting={isExecuting}
+            currentTool={currentToolDisplay}
+          />
+        </Box>
 
-      <DebugPanel
-        logs={debugState.logs}
-        totalCount={debugState.totalCount}
-        filterLevel={debugState.filterLevel}
-        visible={debugState.visible}
-      />
+        {/* 分隔线 */}
+        <Box flexShrink={0}>
+          <Text dimColor>─{'─'.repeat((termWidth - 4))}</Text>
+        </Box>
 
-      {showWelcome && <WelcomeBanner />}
-
-      {/* 消息历史（动态渲染） */}
-      <Box flexDirection="column" paddingLeft={1} paddingRight={1} flexGrow={1}>
-        {displayMessages.map(item => (
-          <MessageItem key={item.id} item={item} />
-        ))}
-
-        {/* 进行中的工具调用 */}
-        {activeTool && (
-          <Box paddingLeft={2}>
-            <Text dimColor>▸ </Text>
-            <Text color="cyan">{activeTool.toolName}</Text>
-            <Text dimColor>: {String(activeTool.toolParams?.path ?? activeTool.toolParams?.command ?? '')} ...</Text>
+        {/* DebugPanel - 可选 */}
+        {debugEnabled && debugState.visible && (
+          <Box flexShrink={0}>
+            <DebugPanel
+              logs={debugState.logs}
+              totalCount={debugState.totalCount}
+              filterLevel={debugState.filterLevel}
+              visible={debugState.visible}
+            />
           </Box>
         )}
 
-        {/* 流式文本 */}
-        {streamingText && (
-          <Box marginTop={1}>
-            <Text bold color="cyan">Tramber: </Text>
-            <Text>{streamingText}</Text>
-          </Box>
-        )}
+        {/* 消息区域 - 自动填充剩余空间 */}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} overflow="hidden" paddingLeft={1} paddingRight={1}>
+          {showWelcome && <WelcomeBanner />}
+          {displayMessages.map(item => (
+            <MessageItem key={item.id} item={item} />
+          ))}
 
-        {/* 权限确认 */}
-        {permissionRequest && (
-          <Box marginTop={1} borderStyle="round" borderColor="yellow" paddingLeft={1} paddingRight={1}>
-            <Box marginY={1}>
-              <Text bold color="yellow">⚠ Permission Required</Text>
+          {/* 进行中的工具调用 */}
+          {activeTool && (
+            <Box paddingLeft={2}>
+              <Text dimColor>▸ </Text>
+              <Text color="cyan">{activeTool.toolName}</Text>
+              <Text dimColor>: {String(activeTool.toolParams?.path ?? activeTool.toolParams?.command ?? '')} ...</Text>
             </Box>
-            <Text>  {permissionRequest.operation} ({permissionRequest.toolCall.name})</Text>
-            {permissionRequest.toolCall.parameters.path != null && (
-              <Text>  File: <Text bold>{String(permissionRequest.toolCall.parameters.path)}</Text></Text>
-            )}
-            {permissionRequest.toolCall.parameters.command != null && (
-              <Text>  Cmd: <Text bold>{String(permissionRequest.toolCall.parameters.command)}</Text></Text>
-            )}
-            {permissionRequest.reason && (
-              <Text dimColor>  {permissionRequest.reason}</Text>
-            )}
-            <Box marginY={1}>
-              <Text>  Allow? </Text>
-              <Text bold>[Y/n] </Text>
+          )}
+
+          {/* 流式文本 */}
+          {streamingText && (
+            <Box marginTop={1}>
+              <Text bold color="cyan">Tramber: </Text>
+              <Text>{streamingText}</Text>
             </Box>
+          )}
+
+          {/* 权限确认 */}
+          {permissionRequest && (
+            <Box marginTop={1} flexDirection="column">
+              <Box borderStyle="round" borderColor="yellow" paddingX={1}>
+                <Box marginY={1}>
+                  <Text bold color="yellow">⚠ Permission Required</Text>
+                </Box>
+                <Text>  {permissionRequest.operation} ({permissionRequest.toolCall.name})</Text>
+                {permissionRequest.toolCall.parameters.path != null && (
+                  <Text>  File: <Text bold>{String(permissionRequest.toolCall.parameters.path)}</Text></Text>
+                )}
+                {permissionRequest.toolCall.parameters.command != null && (
+                  <Text>  Cmd: <Text bold>{String(permissionRequest.toolCall.parameters.command)}</Text></Text>
+                )}
+                {permissionRequest.reason && (
+                  <Text dimColor>  {permissionRequest.reason}</Text>
+                )}
+              </Box>
+              {/* 文件内容预览：显示前 5 行 */}
+              {permissionRequest.toolCall.parameters.content != null && (
+                <Box marginX={1} marginTop={1} flexDirection="column">
+                  <Text dimColor>  Preview:</Text>
+                  {String(permissionRequest.toolCall.parameters.content)
+                    .split('\n').slice(0, 5).map((line, i) => (
+                      <Text key={i} dimColor>  {String(i + 1).padStart(2)}│ <Text>{line}</Text></Text>
+                    ))}
+                </Box>
+              )}
+              <Box marginX={1} marginTop={1}>
+                <Text>  Allow? </Text>
+                <Text bold>[Y/n] </Text>
+              </Box>
+            </Box>
+          )}
+        </Box>
+
+        {/* 分隔线 */}
+        <Box flexShrink={0}>
+          <Text dimColor>─{'─'.repeat((termWidth - 4))}</Text>
+        </Box>
+
+        {/* 底部输入框 */}
+        {!permissionRequest && (
+          <Box flexShrink={0}>
+            <InputBox
+              onSubmit={handleInput}
+              placeholder={isExecuting ? 'Waiting...' : ''}
+              disabled={isExecuting}
+            />
           </Box>
         )}
       </Box>
-
-      {/* 输入框 */}
-      {!permissionRequest && (
-        <InputBox
-          onSubmit={handleInput}
-          placeholder={isExecuting ? 'Waiting...' : ''}
-          disabled={isExecuting}
-        />
-      )}
     </Box>
   );
 }

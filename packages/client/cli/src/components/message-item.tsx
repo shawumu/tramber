@@ -21,7 +21,7 @@ interface MessageItemProps {
   item: MessageItem;
 }
 
-export function MessageItem({ item }: MessageItemProps) {
+export const MessageItem = React.memo(function MessageItem({ item }: MessageItemProps) {
   switch (item.type) {
     case 'user':
       return (
@@ -65,9 +65,11 @@ export function MessageItem({ item }: MessageItemProps) {
       return null;
     case 'error':
       return (
-        <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}>
-          <Text bold color="red">✗ Error</Text>
-          <Text color="redBright">{item.content}</Text>
+        <Box marginTop={1} width="80%">
+          <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}>
+            <Text bold color="red">✗ Error</Text>
+            <Text color="redBright">{item.content}</Text>
+          </Box>
         </Box>
       );
     case 'system':
@@ -77,13 +79,17 @@ export function MessageItem({ item }: MessageItemProps) {
     default:
       return null;
   }
-}
+});
 
 function formatToolParams(params?: Record<string, unknown>): string {
   if (!params) return '';
   if (params.path) return String(params.path);
   if (params.command) return String(params.command);
-  const keys = Object.keys(params);
+  const keys = Object.keys(params).filter(k => k !== 'content');
   if (keys.length === 0) return '';
-  return keys.slice(0, 2).join(', ');
+  // 显示 key=value 对
+  return keys.slice(0, 2).map(k => {
+    const v = String(params[k]);
+    return v.length > 40 ? `${k}=${v.slice(0, 37)}...` : `${k}=${v}`;
+  }).join(', ');
 }

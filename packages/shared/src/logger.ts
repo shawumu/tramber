@@ -5,6 +5,8 @@
  * 提供统一的日志接口，支持命名空间过滤和日志级别控制
  */
 
+import { appendFileSync } from 'fs';
+
 export enum LogLevel {
   ERROR = 'error',     // 仅错误
   BASIC = 'basic',     // 关键步骤 + 错误
@@ -16,7 +18,7 @@ export interface LoggerOptions {
   enabled?: boolean;
   level?: LogLevel;
   namespaces?: string[];  // 命名空间过滤，如 ['tramber:agent', 'tramber:tool']
-  output?: 'console' | 'file' | 'callback';
+  output?: 'console' | 'file' | 'callback' | 'all';
   filePath?: string;
 }
 
@@ -92,7 +94,7 @@ export class Logger {
   private enabled: boolean;
   private level: LogLevel;
   private namespaces: Set<string>;
-  private output: 'console' | 'file' | 'callback';
+  private output: 'console' | 'file' | 'callback' | 'all';
   private filePath?: string;
   /** 日志回调钩子，用于桥接到 Ink DebugPanel */
   onLog?: (entry: DebugLogEntry) => void;
@@ -181,17 +183,28 @@ export class Logger {
     const levelTag = this.levelTag(level);
     const fullMessage = `[${timestamp}] [${namespace}] ${levelTag} ${message}`;
 
-    if (this.output === 'console') {
+    if (this.output === 'all') {
+      // 同时输出到 console、file 和 callback
+      console.error(fullMessage);
+      if (data !== undefined) {
+        console.error(JSON.stringify(data, null, 2));
+      }
+      if (this.filePath) {
+        const content = data !== undefined
+          ? `${fullMessage}\n${JSON.stringify(data, null, 2)}\n`
+          : `${fullMessage}\n`;
+        appendFileSync(this.filePath, content);
+      }
+    } else if (this.output === 'console') {
       console.error(fullMessage);
       if (data !== undefined) {
         console.error(JSON.stringify(data, null, 2));
       }
     } else if (this.output === 'file' && this.filePath) {
-      const fs = require('fs');
       const content = data !== undefined
         ? `${fullMessage}\n${JSON.stringify(data, null, 2)}\n`
         : `${fullMessage}\n`;
-      fs.appendFileSync(this.filePath, content);
+      appendFileSync(this.filePath, content);
     }
     // output === 'callback' 时仅走 onLog，不写 console/file
   }

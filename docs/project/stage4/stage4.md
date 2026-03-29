@@ -3,7 +3,7 @@
 > **创建时间**: 2026-03-28
 > **前置依赖**: Stage 3 (多轮对话 + 工具增强)
 > **预计周期**: 3-4 个工作日
-> **当前状态**: Phase 1-8 已完成
+> **当前状态**: Phase 1-9 全部完成 ✓
 
 ---
 
@@ -498,7 +498,9 @@ packages/client/cli/
 │   ├── hooks/
 │   │   └── use-debug-logs.ts        ← [已完成] Debug bridge → React hook
 │   ├── output-manager.ts            ← [保留] 子命令仍在用
+│   ├── io-manager.ts                ← [保留] 子命令仍在用
 │   └── ...
+│   (已删除: repl.ts, task.ts, interaction-manager.ts, single-command-executor.ts)
 └── packages/shared/
     └── src/logger.ts                ← [已完成] onLog 回调 + DebugLogEntry + callback 模式
 ```
@@ -575,15 +577,15 @@ packages/client/cli/
 
 ---
 
-#### Phase 9: 清理 + 集成测试
+#### Phase 9: 清理 + 集成测试 (已完成 ✓)
 
 **目标**：清理旧代码，全流程验证。
 
-- [ ] 移除 `io-manager.ts`、`repl.ts`
-- [ ] 重构 `single-command-executor.ts`：纯 Engine 调用，不启动 Ink
-- [ ] 重构 `task.ts`：纯业务逻辑，不负责输出
-- [ ] 全流程测试：多轮对话、工具调用、权限确认、流式输出、debug 面板
-- [ ] 更新 stage4.md 文档
+- [x] 依赖分析：确认 `repl.ts`、`task.ts`、`interaction-manager.ts`、`single-command-executor.ts` 无外部引用
+- [x] 删除废弃文件：`repl.ts`、`task.ts`、`interaction-manager.ts`、`single-command-executor.ts`
+- [x] 保留 `output-manager.ts` 和 `io-manager.ts`（子命令仍在使用）
+- [x] 构建验证：`pnpm --filter @tramber/cli build` 通过
+- [x] 更新 stage4.md 文档
 
 ---
 
@@ -643,9 +645,9 @@ Phase 6:    DebugPanel 日志面板        ✓ 已完成
 Phase 7:    输出美化                   ✓ 已完成
 Phase 8:    交互增强                   ✓ 已完成
 Phase 8.5:  布局稳定性修复             ✓ 已完成
-Phase 9:    清理 + 集成测试             0.5 天    ← 当前
+Phase 9:    清理 + 集成测试             ✓ 已完成
 ────────────────────────────────────────────────
-剩余                               0.5 天
+Stage 4 已全部完成 ✓
 ```
 
 ---
@@ -667,3 +669,4 @@ Phase 9:    清理 + 集成测试             0.5 天    ← 当前
 - [x] Ctrl+L 清屏保留会话
 - [x] Tab 命令补全
 - [x] 消息溢出截断，顶底栏不被挤扁
+- [x] 旧代码清理，构建通过

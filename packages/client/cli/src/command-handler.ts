@@ -96,12 +96,17 @@ export class CommandHandler {
    * 处理技能命令
    */
   private async handleSkills(client: TramberEngine, context: CliContext): Promise<void> {
-    const skills = await client.listSkills({ sceneId: context.config.scene });
+    const skills = client.listUserSkills();
     outputManager.writeln('');
-    outputManager.writeln('Available Skills:');
-    for (const skill of skills) {
-      outputManager.writeln(`  • ${skill.name} (${skill.id})`);
-      outputManager.writeln(`    ${skill.description}`);
+    if (skills.length === 0) {
+      outputManager.writeln('No skills installed. Add skills to .tramber/skills/');
+    } else {
+      outputManager.writeln('Installed Skills:');
+      for (const skill of skills) {
+        const status = skill.enabled ? '✓' : '✗';
+        const ver = skill.version ? ` v${skill.version}` : '';
+        outputManager.writeln(`  ${status} ${skill.slug}${ver}  ${skill.description}`);
+      }
     }
     outputManager.writeln('');
   }

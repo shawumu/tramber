@@ -52,82 +52,6 @@ const CODING_WORKFLOW: Workflow = {
 };
 
 /**
- * Coding Scene 预定义 Skills
- */
-const CODING_SKILLS = [
-  {
-    id: 'read-file',
-    name: 'Read File',
-    description: 'Read and display file contents',
-    tools: ['read_file'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'write-file',
-    name: 'Write File',
-    description: 'Write content to a file',
-    tools: ['write_file'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'edit-file',
-    name: 'Edit File',
-    description: 'Edit specific parts of a file',
-    tools: ['edit_file'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'search-files',
-    name: 'Search Files',
-    description: 'Search for files matching a pattern',
-    tools: ['glob'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'search-content',
-    name: 'Search Content',
-    description: 'Search for content within files',
-    tools: ['grep'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'run-command',
-    name: 'Run Command',
-    description: 'Execute shell commands',
-    tools: ['bash'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'fix-bug',
-    name: 'Fix Bug',
-    description: 'Analyze and fix bugs in code',
-    tools: ['read_file', 'edit_file', 'grep', 'bash'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'add-feature',
-    name: 'Add Feature',
-    description: 'Implement new features',
-    tools: ['read_file', 'write_file', 'edit_file', 'glob', 'grep', 'bash'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'refactor',
-    name: 'Refactor',
-    description: 'Refactor code for better structure',
-    tools: ['read_file', 'edit_file', 'grep', 'bash'],
-    sceneId: 'coding'
-  },
-  {
-    id: 'run-tests',
-    name: 'Run Tests',
-    description: 'Execute test suite',
-    tools: ['bash', 'read_file'],
-    sceneId: 'coding'
-  }
-];
-
-/**
  * Coding Scene 系统提示词
  */
 const CODING_SYSTEM_PROMPT = `You are Tramber, an AI coding assistant.
@@ -183,13 +107,6 @@ export const CODING_SCENE_CONFIG: Scene = {
     type: 'ai_generated'
   }
 };
-
-/**
- * 获取 Coding Scene 预定义 Skills
- */
-export function getCodingSkills() {
-  return CODING_SKILLS;
-}
 
 /**
  * 创建 Coding Scene

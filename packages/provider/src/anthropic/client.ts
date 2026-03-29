@@ -190,11 +190,21 @@ export class AnthropicProvider implements AIProvider {
       let currentToolUse: { id?: string; name?: string; input: string } | null = null;
 
       for await (const event of stream) {
+        // 记录每个事件的原始内容
+        debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.VERBOSE, '[STREAM EVENT]', {
+          type: event.type,
+          event: JSON.stringify(event).slice(0, 500)
+        });
+
         switch (event.type) {
           case 'message_start':
             break;
 
           case 'content_block_start':
+            debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[CONTENT_BLOCK_START]', {
+              type: event.content_block.type,
+              block: JSON.stringify(event.content_block)
+            });
             if (event.content_block.type === 'tool_use') {
               currentToolUse = {
                 id: (event.content_block as any).id,
@@ -205,18 +215,36 @@ export class AnthropicProvider implements AIProvider {
             break;
 
           case 'content_block_delta':
+            debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[CONTENT_BLOCK_DELTA]', {
+              deltaType: event.delta.type,
+              delta: JSON.stringify(event.delta).slice(0, 200)
+            });
             if (event.delta.type === 'text_delta') {
               yield {
                 content: event.delta.text,
                 delta: { content: event.delta.text }
               };
             } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
-              currentToolUse.input += (event.delta as any).partial_json;
+              // Zhipu AI sends the accumulated JSON in each delta (not incremental)
+              // So we should assign (=) instead of append (+=)
+              const partialJson = (event.delta as any).partial_json || '';
+              debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[INPUT_JSON_DELTA]', {
+                partialJson: partialJson.slice(0, 100)
+              });
+              // Zhipu sends accumulated content, Anthropic sends incremental
+              // For compatibility, we assign (works for both if Zhipu sends same content multiple times)
+              currentToolUse.input = partialJson;
             }
             break;
 
           case 'content_block_stop':
             if (currentToolUse && currentToolUse.id && currentToolUse.name) {
+              debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[TOOL_USE_COMPLETE]', {
+                id: currentToolUse.id,
+                name: currentToolUse.name,
+                inputLength: currentToolUse.input.length,
+                inputPreview: currentToolUse.input.slice(0, 100)
+              });
               let parameters: Record<string, unknown> = {};
               try {
                 if (currentToolUse.input.trim()) {

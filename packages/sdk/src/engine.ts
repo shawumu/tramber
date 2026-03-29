@@ -9,20 +9,20 @@
 import { ToolRegistryImpl } from '@tramber/tool';
 import { readFileTool, writeFileTool, editFileTool, globTool, grepTool, execTool } from '@tramber/tool';
 import { AnthropicProvider } from '@tramber/provider';
-import { AgentLoop, type AgentLoopStep } from '@tramber/agent';
+import { AgentLoop, type AgentLoopStep, ContextBuffer } from '@tramber/agent';
 import type { Conversation } from '@tramber/agent';
-import { SceneManager, SkillRegistry, CODING_SCENE_CONFIG, getCodingSkills } from '@tramber/scene';
+import { SceneManager, CODING_SCENE_CONFIG } from '@tramber/scene';
+import { SkillLoader, SkillRegistry, type SkillManifest } from '@tramber/skill';
 import { RoutineManager, RoutineSolidifier } from '@tramber/routine';
 import { ExperienceStorage, ExperienceRetriever, ExperienceManager } from '@tramber/experience';
 import { ConfigLoader, PermissionChecker } from '@tramber/permission';
 import { join } from 'path';
-import type { Task, Scene, Skill, Routine, Experience } from '@tramber/shared';
+import type { Task, Scene, Routine, Experience } from '@tramber/shared';
 import type {
   TramberEngineOptions,
   ExecuteOptions,
   ProgressUpdate,
-  TramberResponse,
-  ListOptions
+  TramberResponse
 } from './types.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
@@ -35,13 +35,15 @@ export class TramberEngine {
   private configLoader: ConfigLoader;
   private permissionChecker: PermissionChecker;
   private sceneManager: SceneManager;
-  private skillRegistry: SkillRegistry;
+  private userSkillRegistry: SkillRegistry;
+  private skillLoader: SkillLoader;
   private routineManager: RoutineManager;
   private routineSolidifier: RoutineSolidifier;
   private experienceStorage: ExperienceStorage;
   private experienceRetriever: ExperienceRetriever;
   private experienceManager: ExperienceManager;
   private agentLoopFactory: (options: any) => AgentLoop;
+  private contextBuffer: ContextBuffer;
 
   private options: TramberEngineOptions & {
     workspacePath: string;
@@ -116,19 +118,30 @@ export class TramberEngine {
     this.routineManager = new RoutineManager();
     this.routineSolidifier = new RoutineSolidifier();
 
-    // 初始化 Agent Loop Factory
-    this.agentLoopFactory = (options: any) => new AgentLoop(options);
+    // 初始化 Context Buffer（调试用）
+    const contextBufferDir = join(this.options.workspacePath, '.tramber', 'contexts');
+    this.contextBuffer = new ContextBuffer({
+      saveDir: contextBufferDir,
+      maxFiles: 10,
+      enabled: true
+    });
 
-    // 初始化 Scene & Skill 组件
+    // 初始化 Agent Loop Factory
+    this.agentLoopFactory = (options: any) => new AgentLoop({
+      ...options,
+      contextBuffer: this.contextBuffer
+    });
+
+    // 初始化 Scene 组件
     this.sceneManager = new SceneManager(
       this.agentLoopFactory,
       this.toolRegistry
     );
-    this.skillRegistry = new SkillRegistry({
-      agentLoopFactory: this.agentLoopFactory,
-      toolRegistry: this.toolRegistry,
-      provider: null as any // 稍后设置
-    });
+
+    // 初始化 Skill 加载器（扫描 .tramber/skills/ 目录）
+    const skillsDir = join(this.options.workspacePath, '.tramber', 'skills');
+    this.skillLoader = new SkillLoader(skillsDir);
+    this.userSkillRegistry = new SkillRegistry();
 
     // 如果有 API Key，初始化 Provider
     if (this.options.apiKey) {
@@ -136,17 +149,10 @@ export class TramberEngine {
         apiKey: this.options.apiKey,
         baseURL: this.options.baseURL
       });
-
-      // 更新 Skill Registry 的 provider
-      (this.skillRegistry as any).options.provider = this.provider;
     }
 
     // 注册 Coding Scene
     this.sceneManager.registerScene(CODING_SCENE_CONFIG);
-
-    // 注册 Coding Skills
-    const skills = getCodingSkills();
-    this.skillRegistry.registerSkills(skills as any[]);
   }
 
   /**
@@ -191,6 +197,20 @@ export class TramberEngine {
         debugError(NAMESPACE.EXPERIENCE_STORAGE, 'Failed to load experiences', error);
         // 忽略错误
       }
+    }
+
+    // 加载用户安装的 Skill
+    try {
+      const manifests = await this.skillLoader.loadAll();
+      this.userSkillRegistry.load(manifests);
+      const statePath = join(this.options.workspacePath, '.tramber', 'skills-state.json');
+      await this.userSkillRegistry.loadState(statePath);
+      debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Skills loaded', {
+        count: manifests.length,
+        enabled: this.userSkillRegistry.getEnabled().length
+      });
+    } catch (error) {
+      debugError(NAMESPACE.SDK_CLIENT, 'Failed to load skills', error);
     }
 
     this.isInitialized = true;
@@ -295,6 +315,7 @@ export class TramberEngine {
         maxIterations: options.maxIterations ?? 30,
         stream: options.stream,
         onPermissionRequired: options.onPermissionRequired,
+        userSkills: this.userSkillRegistry.getEnabled(),
         onStep: (step: AgentLoopStep) => {
           // 发送工具调用进度（优先级最高）
           if (step.toolCall) {
@@ -382,11 +403,28 @@ export class TramberEngine {
   }
 
   /**
-   * 列出可用的 Skills
+   * 列出用户安装的 Skills
    */
-  async listSkills(options?: ListOptions): Promise<Skill[]> {
-    await this.ensureInitialized();
-    return this.skillRegistry.listSkills(options?.category);
+  listUserSkills(): SkillManifest[] {
+    return this.userSkillRegistry.list();
+  }
+
+  /**
+   * 启用 Skill
+   */
+  async enableSkill(slug: string): Promise<void> {
+    this.userSkillRegistry.enable(slug);
+    const statePath = join(this.options.workspacePath, '.tramber', 'skills-state.json');
+    await this.userSkillRegistry.saveState(statePath);
+  }
+
+  /**
+   * 禁用 Skill
+   */
+  async disableSkill(slug: string): Promise<void> {
+    this.userSkillRegistry.disable(slug);
+    const statePath = join(this.options.workspacePath, '.tramber', 'skills-state.json');
+    await this.userSkillRegistry.saveState(statePath);
   }
 
   /**
@@ -395,26 +433,6 @@ export class TramberEngine {
   async listRoutines(): Promise<Routine[]> {
     await this.ensureInitialized();
     return this.routineManager.listRoutines();
-  }
-
-  /**
-   * 执行 Skill
-   */
-  async executeSkill(skillId: string, inputs: Record<string, unknown> = {}): Promise<TramberResponse> {
-    await this.ensureInitialized();
-
-    const result = await this.skillRegistry.executeSkill({
-      skillId,
-      inputs,
-      workspacePath: this.options.workspacePath
-    });
-
-    return {
-      success: result.success,
-      result: result.output,
-      steps: result.steps as any[],
-      error: result.error
-    };
   }
 
   /**
@@ -475,7 +493,6 @@ export class TramberEngine {
         apiKey: this.options.apiKey,
         baseURL: this.options.baseURL
       });
-      (this.skillRegistry as any).options.provider = this.provider;
     }
   }
 

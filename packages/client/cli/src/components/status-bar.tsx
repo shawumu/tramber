@@ -12,7 +12,7 @@ interface StatusBarProps {
   currentTool?: string;
 }
 
-export function StatusBar({
+export const StatusBar = React.memo(function StatusBar({
   version = '0.2.0',
   scene = 'coding',
   tokenUsage,
@@ -28,7 +28,7 @@ export function StatusBar({
   };
 
   return (
-    <Box flexShrink={0} borderStyle="single" borderColor="cyan" paddingLeft={1} paddingRight={1}>
+    <Box flexShrink={0} paddingLeft={1} paddingRight={1}>
       <Text bold color="cyan">
         Tramber v{version}
       </Text>
@@ -58,4 +58,4 @@ export function StatusBar({
       )}
     </Box>
   );
-}
+});

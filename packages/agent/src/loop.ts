@@ -16,6 +16,7 @@ import type { Agent, AgentContext, Task } from '@tramber/shared';
 import type { AIProvider } from '@tramber/provider';
 import type { ToolRegistry } from '@tramber/tool';
 import type { PermissionChecker } from '@tramber/permission';
+import type { SkillManifest } from '@tramber/skill';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import {
   createConversation,
@@ -25,6 +26,7 @@ import {
   manageContextWindow,
   type Conversation
 } from './conversation.js';
+import { ContextBuffer, type ContextSnapshot } from './context-buffer.js';
 
 export interface AgentLoopOptions {
   agent: Agent;
@@ -37,6 +39,10 @@ export interface AgentLoopOptions {
   onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
   /** 是否流式输出 */
   stream?: boolean;
+  /** 用户安装的 Skill 列表（注入系统提示词） */
+  userSkills?: SkillManifest[];
+  /** 上下文缓冲区（调试用） */
+  contextBuffer?: ContextBuffer;
 }
 
 export interface AgentLoopStep {
@@ -96,6 +102,7 @@ export class AgentLoop {
     stream: boolean;
   };
   private steps: AgentLoopStep[] = [];
+  private contextBuffer?: ContextBuffer;
 
   constructor(options: AgentLoopOptions) {
     this.options = {
@@ -106,8 +113,10 @@ export class AgentLoop {
       provider: options.provider,
       toolRegistry: options.toolRegistry,
       permissionChecker: options.permissionChecker,
-      onPermissionRequired: options.onPermissionRequired
+      onPermissionRequired: options.onPermissionRequired,
+      userSkills: options.userSkills
     };
+    this.contextBuffer = options.contextBuffer;
   }
 
   /**
@@ -121,9 +130,17 @@ export class AgentLoop {
     // 从当前迭代次数继续
     const startIteration = context.iterations ?? 0;
 
-    debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'Agent loop started', {
+    debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '=== RUNLOOP START DEBUG ===', {
+      startIteration,
       maxIterations: this.options.maxIterations,
-      startIteration
+      contextMessageCount: context.messages.length,
+      conversationMessageCount: conversation.messages.length,
+      lastMessage: conversation.messages.length > 0
+        ? {
+            role: conversation.messages[conversation.messages.length - 1].role,
+            contentPreview: conversation.messages[conversation.messages.length - 1].content.slice(0, 150).replace(/\n/g, '\\n')
+          }
+        : null
     });
 
     for (let i = startIteration; i < this.options.maxIterations; i++) {
@@ -245,42 +262,66 @@ export class AgentLoop {
           this.options.onStep(postStep);
         }
 
-        // 将助手消息（包含工具调用）添加到上下文和 conversation
-        const assistantMsg = content || `[调用 ${response.toolCalls.length} 个工具]`;
-        context.messages.push({ role: 'assistant', content: assistantMsg });
-        addMessage(conversation, { role: 'assistant', content: assistantMsg });
+        // 将助手消息添加到上下文和 conversation（仅当有内容时）
+        if (content && content.trim()) {
+          context.messages.push({ role: 'assistant', content });
+          addMessage(conversation, { role: 'assistant', content });
+        }
 
         // 将工具结果添加到上下文和 conversation
         const MAX_TOOL_RESULT_CHARS = 8000;
         const toolResultsText = toolResult.results.map((r: { toolCall: { name: string }; success: boolean; data?: unknown; error?: string }) => {
           if (r.success) {
-            const dataStr = JSON.stringify(r.data ?? 'null');
-            return `- ${r.toolCall.name}: ${dataStr.slice(0, MAX_TOOL_RESULT_CHARS)}${dataStr.length > MAX_TOOL_RESULT_CHARS ? '... (truncated)' : ''}`;
+            const dataStr = r.data ? JSON.stringify(r.data) : 'Success';
+            return `${r.toolCall.name}: ${dataStr.slice(0, MAX_TOOL_RESULT_CHARS)}${dataStr.length > MAX_TOOL_RESULT_CHARS ? '... (truncated)' : ''}`;
           }
           // 失败时附加工具的 required 参数提示，帮助 LLM 自我修正
           const tool = this.options.toolRegistry.get(r.toolCall.name);
           const requiredHint = tool?.inputSchema?.required?.length
             ? `\n  Required parameters: ${tool.inputSchema.required.join(', ')}`
             : '';
-          return `- ${r.toolCall.name}: 失败 - ${r.error}${requiredHint}`;
+          return `${r.toolCall.name}: 失败 - ${r.error}${requiredHint}`;
         }).join('\n');
 
         const toolResultMsg = `工具执行结果:\n${toolResultsText}`;
         context.messages.push({ role: 'user', content: toolResultMsg });
         addMessage(conversation, { role: 'user', content: toolResultMsg });
 
+        // 记录工具结果到日志
+        for (const r of toolResult.results) {
+          if (r.success) {
+            const dataStr = r.data ? JSON.stringify(r.data).slice(0, 500) : 'Success';
+            debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL RESULT]', `${r.toolCall.name}: ${dataStr}`);
+          } else {
+            debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL RESULT]', `${r.toolCall.name}: FAILED - ${r.error}`);
+          }
+        }
+
+        // DEBUG: 打印添加后的消息列表
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== TOOL RESULT ADDED DEBUG ===', {
+          messageCount: context.messages.length,
+          lastMessage: {
+            role: context.messages[context.messages.length - 1].role,
+            contentLength: context.messages[context.messages.length - 1].content.length,
+            contentPreview: context.messages[context.messages.length - 1].content.slice(0, 200).replace(/\n/g, '\\n')
+          }
+        });
+
         // 继续循环，让 AI 基于工具结果生成新的响应
         debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'Continuing to next iteration');
         continue;
       }
 
-      // 没有工具调用 - 输出给用户，等待回应
-      // 注意：AI 的文本响应已经通过 onStep({ thinking }) 发送了
-      // finalAnswer 只用于结构化数据结果，不包含 AI 文本
+      // 没有工具调用 - 最终回答，存入 conversation
+      if (content) {
+        context.messages.push({ role: 'assistant', content });
+        addMessage(conversation, { role: 'assistant', content });
+      }
+
       debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'No tool calls, finalAnswer is empty (text sent via onStep)');
       return {
         success: true,
-        finalAnswer: '',  // AI 文本已通过 onStep 发送，不再重复放入 finalAnswer
+        finalAnswer: content || '',
         steps: [...this.steps],
         iterations: i + 1,
         terminatedReason: 'completed'
@@ -329,6 +370,18 @@ export class AgentLoop {
         debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'Created new conversation', {
           conversationId: conversation.id
         });
+      } else {
+        // DEBUG: 打印复用 conversation 的状态
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== REUSING CONVERSATION DEBUG ===', {
+          conversationId: conversation.id,
+          messageCount: conversation.messages.length,
+          lastMessage: conversation.messages.length > 0
+            ? {
+                role: conversation.messages[conversation.messages.length - 1].role,
+                contentPreview: conversation.messages[conversation.messages.length - 1].content.slice(0, 150).replace(/\n/g, '\\n')
+              }
+            : null
+        });
       }
 
       // 初始化 Agent 上下文
@@ -343,13 +396,33 @@ export class AgentLoop {
         experiences: []
       };
 
+      // DEBUG: 打印 getMessagesForLLM 后的消息列表
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== GETMESSAGESFORLLM DEBUG ===', {
+        messageCount: context.messages.length,
+        messages: context.messages.map((m, i) => ({
+          index: i,
+          role: m.role,
+          contentLength: m.content.length,
+          contentPreview: m.content.slice(0, 150).replace(/\n/g, '\\n')
+        }))
+      });
+
       // 添加当前用户输入
       context.messages.push({ role: 'user', content: task.description });
       addMessage(conversation, { role: 'user', content: task.description });
 
+      // 记录用户消息到日志
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[USER]', task.description);
+
       debug(NAMESPACE.AGENT_LOOP, LogLevel.TRACE, 'Agent context initialized', {
         messageCount: context.messages.length,
         conversationMessages: conversation.messages.length,
+        lastMessage: context.messages.length > 0
+          ? {
+              role: context.messages[context.messages.length - 1].role,
+              contentPreview: context.messages[context.messages.length - 1].content.slice(0, 150).replace(/\n/g, '\\n')
+            }
+          : null,
         projectRoot: context.projectInfo.rootPath
       });
 
@@ -375,6 +448,27 @@ export class AgentLoop {
         reason: result.terminatedReason,
         conversationMessages: conversation.messages.length
       });
+
+      // 保存上下文快照
+      if (this.contextBuffer) {
+        const snapshot: ContextSnapshot = {
+          timestamp: new Date().toISOString().replace(/[:.]/g, '-'),
+          taskId: task.id,
+          description: task.description,
+          messages: [...context.messages],
+          iterations: result.iterations,
+          success: result.success,
+          terminatedReason: result.terminatedReason
+        };
+
+        // 检测异常：LLM 输出包含工具标记但没有实际调用
+        if (!result.success || ContextBuffer.detectAnomaly(context.messages)) {
+          const dumpPath = this.contextBuffer.dump(snapshot, 'anomaly');
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[CONTEXT DUMP]', { path: dumpPath, reason: 'anomaly detected' });
+        } else {
+          this.contextBuffer.push(snapshot);
+        }
+      }
 
       return { ...result, conversation };
 
@@ -406,6 +500,16 @@ export class AgentLoop {
     };
 
     try {
+      // DEBUG: 打印发送给 LLM 的消息列表
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== CALL LLM DEBUG ===', {
+        messageCount: context.messages.length,
+        messages: context.messages.map((m, i) => ({
+          index: i,
+          role: m.role,
+          contentPreview: m.content.slice(0, 200).replace(/\n/g, '\\n')
+        }))
+      });
+
       const toolDefinitions = this.options.toolRegistry.list().map(tool => ({
         name: tool.id,
         description: tool.description,
@@ -419,12 +523,28 @@ export class AgentLoop {
         maxTokens: this.options.agent.maxTokens ?? 4096
       });
 
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== LLM RESPONSE DEBUG ===', {
+        contentLength: response.content?.length ?? 0,
+        contentPreview: response.content?.slice(0, 200),
+        toolCallsCount: response.toolCalls?.length ?? 0,
+        toolCalls: response.toolCalls
+      });
+
+      // 记录LLM响应到日志
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[LLM]', response.content || '(tool calls only)');
+      if (response.toolCalls && response.toolCalls.length > 0) {
+        for (const tc of response.toolCalls) {
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL CALL]', `${tc.name}(${JSON.stringify(tc.parameters)})`);
+        }
+      }
+
       step.thinking = response.content;
       this.addStep(step);
       this.options.onStep(step);
 
       return response;
     } catch (error) {
+      debugError(NAMESPACE.AGENT_LOOP, 'LLM call failed', error);
       step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
       this.addStep(step);
       this.options.onStep(step);
@@ -449,6 +569,17 @@ export class AgentLoop {
       iteration: context.iterations ?? 0,
       phase: 'action'
     };
+
+    // DEBUG: 打印发送给 LLM 的消息列表
+    debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== CALL LLM STREAM DEBUG ===', {
+      messageCount: context.messages.length,
+      messages: context.messages.map((m, i) => ({
+        index: i,
+        role: m.role,
+        contentLength: m.content.length,
+        contentPreview: m.content.slice(0, 150).replace(/\n/g, '\\n')
+      }))
+    });
 
     try {
       const toolDefinitions = this.options.toolRegistry.list().map(tool => ({
@@ -492,11 +623,27 @@ export class AgentLoop {
       step.thinking = fullContent;
       this.addStep(step);
 
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== LLM STREAM RESPONSE DEBUG ===', {
+        contentLength: fullContent.length,
+        contentPreview: fullContent.slice(0, 200)?.replace(/\n/g, '\\n'),
+        toolCallsCount: allToolCalls.length,
+        toolCalls: allToolCalls
+      });
+
+      // 记录LLM响应到日志
+      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[LLM]', fullContent || '(tool calls only)');
+      if (allToolCalls.length > 0) {
+        for (const tc of allToolCalls) {
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL CALL]', `${tc.name}(${JSON.stringify(tc.parameters)})`);
+        }
+      }
+
       return {
         content: fullContent,
         toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined
       };
     } catch (error) {
+      debugError(NAMESPACE.AGENT_LOOP, 'LLM stream failed', error);
       step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
       this.addStep(step);
       this.options.onStep(step);
@@ -660,46 +807,42 @@ export class AgentLoop {
   buildSystemPrompt(): string {
     const cwd = process.cwd();
     const tools = this.options.toolRegistry.list();
+    const toolList = tools.map(t => `- ${t.id}: ${t.description}`).join('\n');
 
-    const toolGuidelines = tools.map(t => {
-      let line = `- **${t.id}**: ${t.description}`;
-      if (t.id === 'edit_file') {
-        line += ' (优先使用，支持多段替换)';
-      } else if (t.id === 'write_file') {
-        line += ' (仅用于创建新文件)';
-      }
-      return line;
-    }).join('\n');
+    const skillsSection = this.options.userSkills?.length
+      ? `\n### 已安装技能\n${this.options.userSkills.map(s => `- ${s.slug}: ${s.description}`).join('\n')}\n`
+      : '';
 
-    return `你是一个编程助手 ${this.options.agent.name}，${this.options.agent.description}。
-
-## 核心准则
-- 修改代码时，优先使用 edit_file，仅创建新文件时使用 write_file
-- 修改文件前必须先读取确认当前内容，不要凭记忆编辑
-- 保持修改最小化，每次只改必要的部分
-- 简洁回答，不要重复用户已知的信息
-- 遇到工具执行错误时，分析原因并尝试恢复，而非直接放弃
-- 如果不确定文件内容，先 read_file 再做决定
-
-## 工具使用规范
-${toolGuidelines}
+    return `你是编程助手 ${this.options.agent.name}。
 
 ## 工作环境
-- 当前工作目录: ${cwd}
-- 文件路径支持相对路径（相对于当前工作目录）和绝对路径
+当前目录: ${cwd}
 
-## 工作流程
-1. 理解用户需求，分析需要哪些信息
-2. 读取相关文件获取上下文（先读后改）
-3. 规划修改方案，使用 edit_file 精准修改（或 write_file 创建新文件）
-4. 验证修改结果（如需要可执行测试）
-5. 向用户报告结果
+## 重要：工具调用规范
+- 调用工具时必须使用 tool_use 格式，不要在文本中描述工具调用
+- 工具调用后系统会返回执行结果
+- 不要在回复中写入工具名称和参数，系统会自动处理
 
-## 错误处理
-- 工具返回失败时，检查错误信息，尝试修正后重试
-- edit_file 的 oldString 未找到时，重新读取文件获取最新内容
-- edit_file 的 oldString 不唯一时，扩大上下文使其唯一
-- 命令执行失败时，检查命令语法和工作目录
+## 工具与技能
+
+### 内置工具
+${toolList}
+
+### 技能使用方法
+技能是用户安装的扩展能力。使用步骤：
+1. read_file 读取 \`.tramber/skills/<技能slug>/SKILL.md\` 查看用法
+2. exec 执行脚本，例如 \`uv run .tramber/skills/<技能slug>/scripts/xxx.py\`
+
+### 优先级
+- 优先使用内置工具完成任务
+- 内置工具无法完成时，才使用技能
+
+## 工作准则
+- 修改前先读取文件
+- 优先 edit_file，创建新文件用 write_file
+- 简洁回答，不重复已知信息
+- 工具失败时分析错误并重试
+${skillsSection}
 `;
   }
 

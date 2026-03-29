@@ -1,5 +1,5 @@
 // packages/client/cli/src/components/input-box.tsx
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 
 interface InputBoxProps {
@@ -13,10 +13,16 @@ const KNOWN_COMMANDS = [
   '/clear', '/exit', '/quit', '/q', '/debug',
 ];
 
-export function InputBox({ onSubmit, placeholder = '', disabled = false }: InputBoxProps) {
+export const InputBox = React.memo(function InputBox({ onSubmit, placeholder = '', disabled = false }: InputBoxProps) {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const [cursorVisible, setCursorVisible] = useState(true);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCursorVisible(v => !v), 530);
+    return () => clearInterval(timer);
+  }, []);
 
   const submit = useCallback((value: string) => {
     const trimmed = value.trim();
@@ -99,7 +105,7 @@ export function InputBox({ onSubmit, placeholder = '', disabled = false }: Input
   const isMultiLine = lines.length > 1;
 
   return (
-    <Box flexShrink={0} borderStyle="single" borderColor="gray" paddingLeft={1} paddingRight={1} flexDirection="column">
+    <Box flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="column">
       {isMultiLine ? (
         lines.map((line, i) => (
           <Box key={i}>
@@ -111,9 +117,10 @@ export function InputBox({ onSubmit, placeholder = '', disabled = false }: Input
         <Box>
           <Text bold color="green">You: </Text>
           <Text>{input || (placeholder ? <Text dimColor>{placeholder}</Text> : '')}</Text>
+          {cursorVisible && <Text backgroundColor="white" color="black"> </Text>}
+          {!cursorVisible && <Text> </Text>}
         </Box>
       )}
-      <Text color="white"> </Text>
     </Box>
   );
-}
+});

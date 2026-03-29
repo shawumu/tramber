@@ -9,3 +9,4 @@ export * from './conversation.js';
 export * from './conversation-manager.js';
 export * from './tool-executor.js';
 export * from './permission-guard.js';
+export * from './context-buffer.js';
