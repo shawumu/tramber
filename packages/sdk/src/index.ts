@@ -4,12 +4,9 @@
  */
 
 export * from './types.js';
-export * from './engine.js';
-
-// 创建默认引擎实例
 export { TramberEngine } from './engine.js';
 
-// 便捷函数
+// 创建默认引擎实例
 import { TramberEngine } from './engine.js';
 
 let defaultEngine: TramberEngine | null = null;
@@ -32,5 +29,7 @@ export async function execute(description: string, options?: import('./types.js'
   return engine.execute(description, options);
 }
 
-// 向后兼容别名
+/**
+ * @deprecated 使用 TramberEngine 替代。Client 统一指代终端客户端（CLI/Web/VS 扩展等）
+ */
 export { TramberEngine as TramberClient } from './engine.js';

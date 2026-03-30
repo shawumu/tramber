@@ -13,6 +13,8 @@ import { App } from './app.js';
 import { Logger, LogLevel, NAMESPACE, debug } from '@tramber/shared';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
+import { RemoteClient } from './remote-client.js';
+import type { EngineLike } from './engine-interface.js';
 
 const program = new Command();
 
@@ -35,6 +37,7 @@ program
   .option('--debug-namespace <ns...>', 'Debug namespaces: agent, tool, provider, permission, sdk, etc.')
   .option('--debug-file', 'Write debug output to file only (no panel)')
   .option('--debug-panel', 'Show DebugPanel only (no file)')
+  .option('-r, --remote <url>', 'Connect to remote Tramber Server (e.g. ws://localhost:3100)')
   .action(async (input: string[], options) => {
     // 配置 Logger（在所有其他操作之前）
     const debugLogEnabled = options.debug || options.debugFile || options.debugPanel;
@@ -89,12 +92,19 @@ program
     if (options.noExperience) context.config.enableExperience = false;
     if (options.noRoutine) context.config.enableRoutine = false;
 
-    // 创建客户端
-    const client = new TramberEngine({
-      ...context.config,
-      workspacePath: context.workspacePath,
-      configPath: context.configPath
-    });
+    // 创建客户端（本地或远程）
+    let client: EngineLike;
+    if (options.remote) {
+      const remoteClient = new RemoteClient(options.remote);
+      await remoteClient.connect();
+      client = remoteClient;
+    } else {
+      client = new TramberEngine({
+        ...context.config,
+        workspacePath: context.workspacePath,
+        configPath: context.configPath
+      });
+    }
 
     if (input.length > 0) {
       // 单次命令模式 — 直接执行并输出，不启动交互式 UI
@@ -260,6 +270,54 @@ program
         outputManager.writeln(`    ${exp.description}`);
         outputManager.writeln(`    Effectiveness: ${((exp.effectiveness ?? 0.5) * 100).toFixed(0)}%`);
       }
+    }
+  });
+
+// serve 命令
+program
+  .command('serve')
+  .description('Start Tramber Server (HTTP + WebSocket)')
+  .option('-p, --port <port>', 'Port to listen on', '3100')
+  .option('-H, --host <host>', 'Host to bind to', '0.0.0.0')
+  .option('--debug', 'Enable debug mode')
+  .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace', 'basic')
+  .action(async (options) => {
+    if (options.debug) {
+      const logDir = join(process.cwd(), '.tramber', 'logs');
+      if (!existsSync(logDir)) {
+        mkdirSync(logDir, { recursive: true });
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      Logger.getInstance().configure({
+        enabled: true,
+        level: options.debugLevel as LogLevel,
+        output: 'console'
+      });
+    }
+
+    const { TramberServer } = await import('@tramber/server');
+    const server = new TramberServer({
+      port: parseInt(options.port),
+      host: options.host
+    });
+
+    try {
+      await server.start();
+      console.log(`Tramber Server running at http://${options.host}:${options.port}`);
+      console.log(`WebSocket endpoint: ws://${options.host}:${options.port}/ws`);
+      console.log(`REST API: http://${options.host}:${options.port}/api/health`);
+
+      const shutdown = async () => {
+        console.log('\nShutting down...');
+        await server.stop();
+        process.exit(0);
+      };
+
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    } catch (err) {
+      console.error('Failed to start server:', err);
+      process.exit(1);
     }
   });
 

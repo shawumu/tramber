@@ -63,80 +63,154 @@ cat > ~/.tramber/settings.json << EOF
 EOF
 ```
 
-## 2. 构建 CLI
+## 2. 构建
 
 ```bash
-# 在项目根目录
-cd d:/workspace/ownspace/tramber
-
-# 构建 SDK 和 CLI
-cd packages/sdk && pnpm build && cd ../client/cli && pnpm build
+# 在项目根目录，构建所有包
+pnpm build
 ```
 
-## 3. 运行 CLI
+## 3. 运行方式
 
-### 启动 REPL 模式（交互式）
+Tramber 支持两种运行模式：**本地模式**（默认）和**远程模式**（Server + Client 分离）。
+
+### 3.1 本地模式
+
+CLI 直接调用本地 TramberEngine，无需额外启动服务。
+
+#### 启动 REPL 模式（交互式）
 
 ```bash
-# 方式 1：使用 pnpm
+# 方式 1：全局命令（推荐，已通过 npm link 安装）
+tramber
+
+# 方式 2：使用 pnpm
 pnpm cli
 
-# 方式 2：直接运行
+# 方式 3：直接运行
 node packages/client/cli/dist/cli.js
-
-# 方式 3：全局安装后
-npm link -g @tramber/cli
-tramber
 ```
 
-### 执行单条命令
+#### 执行单条命令
 
 ```bash
 # 读取文件
-pnpm cli "读取 package.json"
+tramber "读取 package.json"
 
 # 修复 bug
-pnpm cli "修复 src/index.ts 中的错误"
+tramber "修复 src/index.ts 中的错误"
+```
 
-# 运行测试
-pnpm cli "运行测试"
+### 3.2 远程模式（Server + Client）
+
+Server 独立运行在远程或本地，Client 通过 WebSocket 连接 Server。适合 Web/Bot/IDE 插件等多 Client 接入场景。
+
+#### 启动 Server
+
+```bash
+# 方式 1：通过全局命令（推荐）
+tramber serve
+
+# 方式 2：指定端口和地址
+tramber serve --port 3100 --host 0.0.0.0
+
+# 方式 3：使用 pnpm
+pnpm cli serve
+
+# 方式 4：直接运行 Server 包
+node packages/server/dist/server.js
+```
+
+Server 启动后提供：
+- HTTP REST API：`http://localhost:3100/api/*`
+- WebSocket 端点：`ws://localhost:3100/ws`
+
+#### 启动 Client 连接远程 Server
+
+```bash
+# REPL 模式连接远程
+tramber --remote ws://localhost:3100
+
+# 单条命令连接远程
+tramber --remote ws://localhost:3100 "读取 package.json"
+```
+
+#### REST API
+
+```bash
+# 健康检查
+curl http://localhost:3100/api/health
+
+# 列出 Scenes
+curl http://localhost:3100/api/scenes
+
+# 列出 Skills
+curl http://localhost:3100/api/skills
+
+# 获取配置
+curl http://localhost:3100/api/config
+
+# 更新配置
+curl -X PUT http://localhost:3100/api/config \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4-6"}'
+
+# 搜索经验
+curl -X POST http://localhost:3100/api/experiences/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "文件读取", "limit": 5}'
+```
+
+#### WebSocket 通信
+
+```
+Client → Server:
+  { type: "execute", id: "...", sessionId: "...", payload: { description: "读取 package.json" }}
+  { type: "permission_response", id: "...", sessionId: "...", payload: { requestId: "...", confirmed: true }}
+  { type: "ping", id: "...", sessionId: "", payload: {} }
+
+Server → Client:
+  { type: "progress", id: "...", sessionId: "...", payload: { type: "text_delta", content: "..." }}
+  { type: "permission_request", id: "...", sessionId: "...", payload: { requestId: "...", operation: "file_write" }}
+  { type: "result", id: "...", sessionId: "...", payload: { success: true, result: "..." }}
+  { type: "pong", id: "...", sessionId: "", payload: {} }
 ```
 
 ### 查看命令
 
 ```bash
 # 列出场景
-pnpm cli scene
+tramber scene
 
 # 列出技能
-pnpm cli skills
+tramber skills
 
 # 列出例程
-pnpm cli routines
+tramber routines
 
 # 查看配置
-pnpm cli config --list
+tramber config --list
 
 # 设置配置
-pnpm cli config --set model=claude-sonnet-4-6
+tramber config --set model=claude-sonnet-4-6
 ```
 
 ## 4. 在代码中使用
 
 ```typescript
-import { TramberClient } from '@tramber/sdk';
+import { TramberEngine } from '@tramber/sdk';
 
-// 创建客户端
-const client = new TramberClient({
+// 创建引擎
+const engine = new TramberEngine({
   apiKey: process.env.ANTHROPIC_API_KEY,
   workspacePath: process.cwd()
 });
 
 // 初始化
-await client.initialize();
+await engine.initialize();
 
 // 执行任务
-const result = await client.execute('读取 package.json');
+const result = await engine.execute('读取 package.json');
 
 if (result.success) {
   console.log(result.result);
@@ -144,12 +218,8 @@ if (result.success) {
   console.error(result.error);
 }
 
-// 列出可用的技能
-const skills = await client.listSkills();
-console.log('Available skills:', skills);
-
-// 关闭客户端
-await client.close();
+// 关闭
+await engine.close();
 ```
 
 ## 5. REPL 命令
@@ -220,6 +290,6 @@ Error: EACCES: permission denied
 
 ## 8. 下一步
 
-- 阅读 [MVP 任务清单](./mvp-task-list.md) 了解实现细节
-- 查看 [统一设计文档](./tramber-unified-plan.md) 了解架构设计
+- 查看 [统一设计文档](../project/tramber-unified-plan.md) 了解架构设计
+- 查看各阶段设计文档：`docs/project/stage{N}/stage{N}.md`
 - 运行测试：`pnpm test`

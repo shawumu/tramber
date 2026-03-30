@@ -19,10 +19,10 @@
 
 import { useState, useCallback, useRef, useMemo } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
-import type { TramberEngine } from '@tramber/sdk';
 import type { Conversation } from '@tramber/agent';
 import type { ProgressUpdate } from '@tramber/sdk';
 import type { CliContext } from './config.js';
+import type { EngineLike } from './engine-interface.js';
 import { StatusBar } from './components/status-bar.js';
 import { InputBox } from './components/input-box.js';
 import { WelcomeBanner } from './components/welcome-banner.js';
@@ -91,7 +91,7 @@ function calcPermissionLines(req: PermissionRequest | null, termWidth: number): 
 }
 
 interface AppProps {
-  engine: TramberEngine;
+  engine: EngineLike;
   context: CliContext;
   autoConfirm?: boolean;
   debugEnabled?: boolean;

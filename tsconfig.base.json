@@ -32,7 +32,9 @@
       "@tramber/agent": ["./packages/agent/src"],
       "@tramber/agent/*": ["./packages/agent/src/*"],
       "@tramber/sdk": ["./packages/sdk/src"],
-      "@tramber/sdk/*": ["./packages/sdk/src/*"]
+      "@tramber/sdk/*": ["./packages/sdk/src/*"],
+      "@tramber/server": ["./packages/server/src"],
+      "@tramber/server/*": ["./packages/server/src/*"]
     }
   },
   "exclude": ["node_modules", "dist", "**/*.dist.ts", "**/node_modules"]
