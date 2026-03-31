@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.37
+      '@types/ws':
+        specifier: ^8.5.10
+        version: 8.18.1
       '@typescript-eslint/eslint-plugin':
         specifier: ^6.19.0
         version: 6.21.0(@typescript-eslint/parser@6.21.0(eslint@8.57.1)(typescript@5.9.3))(eslint@8.57.1)(typescript@5.9.3)
@@ -41,6 +44,9 @@ importers:
       vue:
         specifier: ^3.4.19
         version: 3.5.30(typescript@5.9.3)
+      ws:
+        specifier: ^8.18.0
+        version: 8.20.0
 
   packages/agent:
     dependencies:

@@ -134,4 +134,15 @@ export class TramberServer {
   getEngine(): TramberEngine {
     return this.engine;
   }
+
+  /**
+   * 获取服务器实际监听的地址（IP:端口）
+   * 用于测试时动态分配端口后获取真实地址
+   */
+  getListenAddress(): string {
+    const addr = this.fastify.server.address();
+    if (typeof addr === 'string') return addr;
+    if (!addr) return `${this.options.host}:${this.options.port}`;
+    return `${addr.address}:${addr.port}`;
+  }
 }

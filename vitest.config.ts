@@ -13,7 +13,9 @@ export default defineConfig({
       '@tramber/scene': resolve(__dirname, 'packages/scene/src'),
       '@tramber/routine': resolve(__dirname, 'packages/routine/src'),
       '@tramber/experience': resolve(__dirname, 'packages/experience/src'),
-      '@tramber/sdk': resolve(__dirname, 'packages/sdk/src')
+      '@tramber/sdk': resolve(__dirname, 'packages/sdk/src'),
+      '@tramber/server': resolve(__dirname, 'packages/server/src'),
+      '@tramber/skill': resolve(__dirname, 'packages/skill/src')
     }
   },
   test: {

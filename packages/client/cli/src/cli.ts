@@ -23,6 +23,14 @@ program
   .description('Tramber - AI Assisted Programming Tool (MVP v0.1.0)')
   .version('0.1.0');
 
+// 全局 debug 选项（所有子命令共享）
+program
+  .option('--debug', 'Enable debug mode (console + file + panel)')
+  .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace', 'basic')
+  .option('--debug-namespace <ns...>', 'Debug namespaces: agent, tool, provider, permission, sdk, etc.')
+  .option('--debug-file', 'Write debug output to file only (no panel)')
+  .option('--debug-panel', 'Show DebugPanel only (no file)');
+
 // REPL 模式（默认）
 program
   .argument('[input...]', 'Input to execute, or start REPL if no input provided')
@@ -32,11 +40,6 @@ program
   .option('--no-experience', 'Disable experience')
   .option('--no-routine', 'Disable routine')
   .option('-y, --yes', 'Auto-confirm all permissions')
-  .option('--debug', 'Enable debug mode (console + file + panel)')
-  .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace', 'basic')
-  .option('--debug-namespace <ns...>', 'Debug namespaces: agent, tool, provider, permission, sdk, etc.')
-  .option('--debug-file', 'Write debug output to file only (no panel)')
-  .option('--debug-panel', 'Show DebugPanel only (no file)')
   .option('-r, --remote <url>', 'Connect to remote Tramber Server (e.g. ws://localhost:3100)')
   .action(async (input: string[], options) => {
     // 配置 Logger（在所有其他操作之前）
@@ -279,20 +282,36 @@ program
   .description('Start Tramber Server (HTTP + WebSocket)')
   .option('-p, --port <port>', 'Port to listen on', '3100')
   .option('-H, --host <host>', 'Host to bind to', '0.0.0.0')
-  .option('--debug', 'Enable debug mode')
-  .option('--debug-level <level>', 'Debug level: error, basic, verbose, trace', 'basic')
   .action(async (options) => {
-    if (options.debug) {
+    // 应用全局 debug 配置
+    const globalOpts = program.opts();
+    const debugLogEnabled = globalOpts.debug || globalOpts.debugFile || globalOpts.debugPanel;
+    if (debugLogEnabled) {
       const logDir = join(process.cwd(), '.tramber', 'logs');
       if (!existsSync(logDir)) {
         mkdirSync(logDir, { recursive: true });
       }
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const logFilePath = join(logDir, `tramber-${timestamp}.log`);
+
+      let output: 'console' | 'file' | 'callback' | 'all';
+      if (globalOpts.debug) {
+        output = 'all';
+      } else if (globalOpts.debugFile) {
+        output = 'file';
+      } else {
+        output = 'console';
+      }
+
       Logger.getInstance().configure({
         enabled: true,
-        level: options.debugLevel as LogLevel,
-        output: 'console'
+        level: globalOpts.debugLevel as LogLevel,
+        namespaces: globalOpts.debugNamespace,
+        output,
+        filePath: logFilePath
       });
+
+      debug(NAMESPACE.CLI, LogLevel.BASIC, 'Debug mode enabled', { output, logFilePath });
     }
 
     const { TramberServer } = await import('@tramber/server');
