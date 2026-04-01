@@ -10,6 +10,7 @@
  */
 
 import Fastify, { type FastifyInstance } from 'fastify';
+import fastifyStatic from '@fastify/static';
 import { WebSocketServer } from 'ws';
 import { TramberEngine } from '@tramber/sdk';
 import { debug, LogLevel } from '@tramber/shared';
@@ -17,6 +18,9 @@ import { registerRoutes } from './routes.js';
 import { WsHandler } from './ws-handler.js';
 import { SessionManager } from './session-manager.js';
 import type { ServerOptions } from './types.js';
+import { existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 const NAMESPACE = 'tramber:server';
 
@@ -68,6 +72,9 @@ export class TramberServer {
 
     // 注册 REST 路由
     await registerRoutes(this.fastify, this.engine);
+
+    // 注册 Web 静态文件服务
+    await this.registerWebStatic();
 
     // 用 Fastify 启动 HTTP 监听
     await this.fastify.listen({ port: this.options.port, host: this.options.host });
@@ -144,5 +151,58 @@ export class TramberServer {
     if (typeof addr === 'string') return addr;
     if (!addr) return `${this.options.host}:${this.options.port}`;
     return `${addr.address}:${addr.port}`;
+  }
+
+  /**
+   * 注册 Web Client 静态文件服务
+   * 从 packages/client/web/dist/ 提供 Web UI
+   */
+  private async registerWebStatic(): Promise<void> {
+    const webDir = this.resolveWebDir();
+    if (!webDir) return;
+
+    await this.fastify.register(fastifyStatic, {
+      root: webDir,
+      prefix: '/',
+      wildcard: false,
+      decorateReply: false
+    });
+
+    // SPA fallback：未匹配的路由返回 index.html
+    this.fastify.setNotFoundHandler(async (_request, reply) => {
+      return reply.type('text/html').sendFile('index.html');
+    });
+
+    debug(NAMESPACE, LogLevel.BASIC, 'Web static files served', { webDir });
+  }
+
+  /**
+   * 解析 Web 静态文件目录
+   */
+  private resolveWebDir(): string | null {
+    const { webDir } = this.options;
+    if (webDir === false) return null;
+
+    if (typeof webDir === 'string') {
+      return existsSync(webDir) ? webDir : null;
+    }
+
+    // 自动检测：向上查找 packages/client/web/dist
+    const candidates = [
+      // 从 server 包向上查找
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../client/web/dist'),
+      // 从 CWD 查找
+      resolve(process.cwd(), 'packages/client/web/dist'),
+      // 从 CWD 的 dist 场景
+      resolve(process.cwd(), 'client/web/dist')
+    ];
+
+    for (const dir of candidates) {
+      if (existsSync(dir) && existsSync(resolve(dir, 'index.html'))) {
+        return dir;
+      }
+    }
+
+    return null;
   }
 }

@@ -225,15 +225,12 @@ export class AnthropicProvider implements AIProvider {
                 delta: { content: event.delta.text }
               };
             } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
-              // Zhipu AI sends the accumulated JSON in each delta (not incremental)
-              // So we should assign (=) instead of append (+=)
               const partialJson = (event.delta as any).partial_json || '';
               debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[INPUT_JSON_DELTA]', {
                 partialJson: partialJson.slice(0, 100)
               });
-              // Zhipu sends accumulated content, Anthropic sends incremental
-              // For compatibility, we assign (works for both if Zhipu sends same content multiple times)
-              currentToolUse.input = partialJson;
+              // Anthropic API sends incremental partial_json chunks — always append
+              currentToolUse.input += partialJson;
             }
             break;
 

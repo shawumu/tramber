@@ -26,9 +26,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@tramber/shared": "workspace:*",
-    "@tramber/sdk": "workspace:*",
+    "@fastify/static": "^9.0.0",
     "@tramber/agent": "workspace:*",
+    "@tramber/sdk": "workspace:*",
+    "@tramber/shared": "workspace:*",
     "fastify": "^5.3.3",
     "ws": "^8.18.0"
   },

@@ -15,6 +15,8 @@ export interface ServerOptions {
   permissionTimeout?: number;
   /** 会话超时（毫秒），默认 3600000 (1小时) */
   sessionTimeout?: number;
+  /** Web 静态文件目录（提供 Web Client UI），设为 true 自动检测，false 或 undefined 不启用 */
+  webDir?: string | boolean;
 }
 
 /** WS 消息信封 */
