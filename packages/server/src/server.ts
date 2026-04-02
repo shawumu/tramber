@@ -13,7 +13,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { WebSocketServer } from 'ws';
 import { TramberEngine } from '@tramber/sdk';
-import { debug, LogLevel } from '@tramber/shared';
+import { debug, debugError, LogLevel } from '@tramber/shared';
 import { registerRoutes } from './routes.js';
 import { WsHandler } from './ws-handler.js';
 import { SessionManager } from './session-manager.js';
@@ -105,22 +105,38 @@ export class TramberServer {
 
     debug(NAMESPACE, LogLevel.BASIC, 'Shutting down...');
 
-    this.sessionManager.stopCleanup();
+    try {
+      this.sessionManager.stopCleanup();
+    } catch (err) {
+      debugError(NAMESPACE, 'Error stopping session cleanup', err);
+    }
 
     // 关闭 WS
-    if (this.wss) {
-      for (const ws of this.wss.clients) {
-        ws.close(1001, 'Server shutting down');
+    try {
+      if (this.wss) {
+        for (const ws of this.wss.clients) {
+          ws.close(1001, 'Server shutting down');
+        }
+        this.wss.close();
+        this.wss = null;
       }
-      this.wss.close();
-      this.wss = null;
+    } catch (err) {
+      debugError(NAMESPACE, 'Error closing WebSocket', err);
     }
 
     // 关闭 Fastify
-    await this.fastify.close();
+    try {
+      await this.fastify.close();
+    } catch (err) {
+      debugError(NAMESPACE, 'Error closing Fastify', err);
+    }
 
     // 关闭 Engine
-    await this.engine.close();
+    try {
+      await this.engine.close();
+    } catch (err) {
+      debugError(NAMESPACE, 'Error closing Engine', err);
+    }
 
     this.running = false;
     debug(NAMESPACE, LogLevel.BASIC, 'Server stopped');

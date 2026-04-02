@@ -79,8 +79,10 @@ export const execTool: Tool = {
       try {
         // Windows 特殊处理：使用 cmd.exe /c 执行内置命令
         const isWindows = process.platform === 'win32';
+        // Windows: 切换到 UTF-8 代码页避免中文乱码
+        const windowsPrefix = isWindows ? 'chcp 65001 >nul && ' : '';
         const spawnCmd = isWindows && !cmd.includes('.exe') && !cmd.includes('.bat')
-          ? `cmd.exe /c ${command}`
+          ? `cmd.exe /c ${windowsPrefix}${command}`
           : command;
 
         debug(NAMESPACE.TOOL_EXEC, LogLevel.BASIC, 'Spawning command', {

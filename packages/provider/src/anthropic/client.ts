@@ -111,7 +111,7 @@ export class AnthropicProvider implements AIProvider {
       const params: Anthropic.MessageCreateParamsNonStreaming = {
         model: this.getDefaultModel() as Anthropic.Model,
         messages,
-        max_tokens: options.maxTokens || 4096
+        max_tokens: options.maxTokens || 16384
       };
 
       if (systemMessages.length > 0) {
@@ -169,7 +169,7 @@ export class AnthropicProvider implements AIProvider {
       const params: Anthropic.MessageCreateParamsStreaming = {
         model: this.getDefaultModel() as Anthropic.Model,
         messages,
-        max_tokens: options.maxTokens || 4096,
+        max_tokens: options.maxTokens || 16384,
         stream: true
       };
 
@@ -247,8 +247,19 @@ export class AnthropicProvider implements AIProvider {
                 if (currentToolUse.input.trim()) {
                   parameters = JSON.parse(currentToolUse.input);
                 }
-              } catch {
-                // Invalid JSON, keep empty
+              } catch (parseError) {
+                const msg = parseError instanceof Error ? parseError.message : String(parseError);
+                debugError(NAMESPACE.PROVIDER_ANTHROPIC, `JSON.parse failed for tool input: ${msg}`, parseError);
+                if (msg?.includes('Unterminated') || msg?.includes('position')) {
+                  debugError(NAMESPACE.PROVIDER_ANTHROPIC, 'Likely caused by max_tokens truncation. Tool input was cut off before the complete JSON was received.', {
+                    inputLength: currentToolUse.input.length,
+                    hint: 'Consider increasing agent.maxTokens (current default: 4096 -> 16384)'
+                  });
+                }
+                debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[TOOL INPUT PARSE FAILED - full content]', {
+                  inputLength: currentToolUse.input.length,
+                  fullInput: currentToolUse.input
+                });
               }
               yield {
                 content: '',
@@ -263,6 +274,11 @@ export class AnthropicProvider implements AIProvider {
             break;
 
           case 'message_delta':
+            if ((event as any).delta?.stop_reason === 'max_tokens') {
+              debugError(NAMESPACE.PROVIDER_ANTHROPIC, 'Response truncated: stop_reason is max_tokens. Consider increasing maxTokens.', {
+                stopReason: (event as any).delta?.stop_reason
+              });
+            }
             yield {
               content: '',
               delta: {}

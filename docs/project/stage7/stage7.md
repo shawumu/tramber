@@ -1,8 +1,10 @@
 # Tramber Stage 7: Web Client MVP
 
 > **创建时间**: 2026-04-01
+> **完成时间**: 2026-04-02
 > **前置依赖**: Stage 6 (Server 独立化)
-> **预计周期**: 2-3 个工作日
+> **实际周期**: 2 个工作日
+> **状态**: ✅ 完成
 
 ---
 
@@ -237,10 +239,10 @@ Server                          Web Client
 
 | 任务 | 优先级 | 预估时间 | 状态 |
 |------|--------|---------|------|
-| 1.1 创建 `packages/client/web/` 包结构（package.json, tsconfig.json, vite.config.ts） | P0 | 0.5h | ⬜ |
-| 1.2 配置 Element Plus + Vue 3 + 按需导入 | P0 | 0.5h | ⬜ |
-| 1.3 配置 Vite proxy 对接 Server | P0 | 0.5h | ⬜ |
-| 1.4 添加 tsconfig 路径映射 | P0 | 0.5h | ⬜ |
+| 1.1 创建 `packages/client/web/` 包结构（package.json, tsconfig.json, vite.config.ts） | P0 | 0.5h | ✅ |
+| 1.2 配置 Element Plus + Vue 3 + 按需导入 | P0 | 0.5h | ✅ |
+| 1.3 配置 Vite proxy 对接 Server | P0 | 0.5h | ✅ |
+| 1.4 添加 tsconfig 路径映射 | P0 | 0.5h | ✅ |
 
 **验收标准**：
 ```bash
@@ -256,9 +258,9 @@ VITE v5.x.x  ready in xxx ms
 
 | 任务 | 优先级 | 预估时间 | 状态 |
 |------|--------|---------|------|
-| 2.1 实现 TramberClient 类 | P0 | 1h | ⬜ |
-| 2.2 实现 useConnection composable | P0 | 0.5h | ⬜ |
-| 2.3 心跳 + 重连 + 断开清理 | P1 | 0.5h | ⬜ |
+| 2.1 实现 TramberClient 类 | P0 | 1h | ✅ |
+| 2.2 实现 useConnection composable | P0 | 0.5h | ✅ |
+| 2.3 心跳 + 重连 + 断开清理 | P1 | 0.5h | ✅ |
 
 **验收标准**：
 - 浏览器控制台可见 WS 连接建立
@@ -271,13 +273,13 @@ VITE v5.x.x  ready in xxx ms
 
 | 任务 | 优先级 | 预估时间 | 状态 |
 |------|--------|---------|------|
-| 3.1 App.vue 布局（顶栏 + 主区域 + 状态栏） | P0 | 0.5h | ⬜ |
-| 3.2 useChat composable | P0 | 0.5h | ⬜ |
-| 3.3 ChatView + MessageList + MessageItem | P0 | 1h | ⬜ |
-| 3.4 MessageInput（输入框 + 发送 + Enter 快捷键） | P0 | 0.5h | ⬜ |
-| 3.5 流式输出渲染（text_delta 追加） | P0 | 0.5h | ⬜ |
-| 3.6 工具调用展示（tool_call + tool_result） | P1 | 0.5h | ⬜ |
-| 3.7 StatusBar（连接状态） | P1 | 0.5h | ⬜ |
+| 3.1 App.vue 布局（顶栏 + 主区域 + 状态栏） | P0 | 0.5h | ✅ |
+| 3.2 useChat composable | P0 | 0.5h | ✅ |
+| 3.3 ChatView + MessageList + MessageItem | P0 | 1h | ✅ |
+| 3.4 MessageInput（输入框 + 发送 + Enter 快捷键） | P0 | 0.5h | ✅ |
+| 3.5 流式输出渲染（text_delta 追加） | P0 | 0.5h | ✅ |
+| 3.6 工具调用展示（tool_call + tool_result） | P1 | 0.5h | ✅ |
+| 3.7 StatusBar（连接状态） | P1 | 0.5h | ✅ |
 
 **验收标准**：
 ```
@@ -298,8 +300,8 @@ $ pnpm dev
 
 | 任务 | 优先级 | 预估时间 | 状态 |
 |------|--------|---------|------|
-| 4.1 PermissionDialog 组件 | P0 | 0.5h | ⬜ |
-| 4.2 集成到 useConnection/useChat | P0 | 0.5h | ⬜ |
+| 4.1 PermissionDialog 组件 | P0 | 0.5h | ✅ |
+| 4.2 集成到 useConnection/useChat | P0 | 0.5h | ✅ |
 
 **验收标准**：
 ```
@@ -316,8 +318,8 @@ $ pnpm dev
 
 | 任务 | 优先级 | 预估时间 | 状态 |
 |------|--------|---------|------|
-| 5.1 端到端联调测试 | P0 | 0.5h | ⬜ |
-| 5.2 更新 CLAUDE.md 路线图 | P0 | 0.5h | ⬜ |
+| 5.1 端到端联调测试 | P0 | 0.5h | ✅ |
+| 5.2 更新 CLAUDE.md 路线图 | P0 | 0.5h | ✅ |
 | 5.3 更新 getting-started.md | P1 | 0.5h | ⬜ |
 
 ---
@@ -382,14 +384,14 @@ $ pnpm dev
 
 ## 8. 时间估算
 
-| Phase | 内容 | 预估时间 |
-|-------|------|---------|
-| Phase 1 | 包初始化 | 0.5 天 |
-| Phase 2 | WebSocket 客户端 | 0.5 天 |
-| Phase 3 | 聊天界面 | 1 天 |
-| Phase 4 | 权限确认 | 0.5 天 |
-| Phase 5 | 联调与文档 | 0.5 天 |
-| **总计** | | **3 天** |
+| Phase | 内容 | 预估时间 | 实际时间 |
+|-------|------|---------|---------|
+| Phase 1 | 包初始化 | 0.5 天 | 0.5 天 |
+| Phase 2 | WebSocket 客户端 | 0.5 天 | 0.5 天 |
+| Phase 3 | 聊天界面 | 1 天 | 0.5 天 |
+| Phase 4 | 权限确认 | 0.5 天 | 0.5 天 |
+| Phase 5 | 联调与文档 | 0.5 天 | 0 天 |
+| **总计** | | **3 天** | **2 天** |
 
 ---
 
@@ -416,5 +418,61 @@ $ pnpm dev
 
 ---
 
+## 10. 完成总结
+
+### 10.1 已实现功能
+
+✅ **Vue 3 + Vite + Element Plus 基础架构**
+- 按需导入 Element Plus 组件
+- Vite proxy 配置对接 Server
+- TypeScript 路径映射
+
+✅ **WebSocket 客户端 (TramberClient)**
+- 连接管理（connect/disconnect）
+- 心跳保活（ping/pong）
+- 自动重连机制
+- 消息类型映射（execute/progress/permission_request/result）
+
+✅ **Composables**
+- `useConnection`: 连接状态管理
+- `useChat`: 聊天消息管理、流式追加
+
+✅ **UI 组件**
+- `App.vue`: 顶栏 + 主区域 + 状态栏布局
+- `ChatView.vue`: 聊天视图容器
+- `MessageList.vue`: 消息列表（自动滚底）
+- `MessageItem.vue`: 单条消息渲染（支持工具调用展示）
+- `MessageInput.vue`: 输入框 + 发送按钮
+- `PermissionDialog.vue`: 权限确认弹窗
+- `StatusBar.vue`: 连接状态指示
+
+✅ **流式输出**
+- text_delta 逐步追加到 AI 回复
+- tool_call / tool_result 配对展示
+- 执行进度实时更新
+
+✅ **权限确认**
+- 弹窗显示操作类型、工具名、参数
+- 确认/拒绝双向通信
+
+### 10.2 技术栈确认
+
+| 技术 | 版本 | 用途 |
+|------|------|------|
+| Vue | 3.5.30 | 前端框架 |
+| Element Plus | 2.13.6 | UI 组件库 |
+| Vite | 8.0.1 | 构建工具 |
+| TypeScript | 5.9.3 | 类型系统 |
+| unplugin-vue-components | 19.0.0 | 组件按需导入 |
+
+### 10.3 已知限制
+
+- 暂无会话历史管理（每次刷新清空）
+- 暂无设置页面（权限配置需手动修改 `.tramber/settings.json`）
+- 流式输出在大文本时可能有性能波动
+
+---
+
 *文档创建时间: 2026-04-01*
-*文档版本: 1.0*
+*完成时间: 2026-04-02*
+*文档版本: 1.1*

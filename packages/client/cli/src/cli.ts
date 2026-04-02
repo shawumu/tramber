@@ -328,12 +328,29 @@ program
 
       const shutdown = async () => {
         console.log('\nShutting down...');
-        await server.stop();
+        try {
+          await Promise.race([
+            server.stop(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Shutdown timeout')), 5000))
+          ]);
+        } catch (err) {
+          console.error('Error during shutdown:', err);
+        }
         process.exit(0);
       };
 
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
+      let isShuttingDown = false;
+      const handleSignal = async () => {
+        if (isShuttingDown) {
+          console.log('\nForce exit...');
+          process.exit(1);
+        }
+        isShuttingDown = true;
+        await shutdown();
+      };
+
+      process.on('SIGINT', handleSignal);
+      process.on('SIGTERM', handleSignal);
     } catch (err) {
       console.error('Failed to start server:', err);
       process.exit(1);

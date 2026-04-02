@@ -275,12 +275,30 @@ export class AgentLoop {
             const dataStr = r.data ? JSON.stringify(r.data) : 'Success';
             return `${r.toolCall.name}: ${dataStr.slice(0, MAX_TOOL_RESULT_CHARS)}${dataStr.length > MAX_TOOL_RESULT_CHARS ? '... (truncated)' : ''}`;
           }
-          // 失败时附加工具的 required 参数提示，帮助 LLM 自我修正
+          // 失败时构造清晰的错误信息
+          let errorMsg = r.error;
+          if (!errorMsg && r.data) {
+            // 从 data 中提取错误信息（适用于 exec 等工具）
+            const d = r.data as { command?: string; exitCode?: number | null; stdout?: string; stderr?: string };
+            if (d.stderr) {
+              errorMsg = d.stderr.trim();
+            } else if (d.exitCode !== null && d.exitCode !== 0) {
+              errorMsg = `Exit code ${d.exitCode}`;
+            } else {
+              errorMsg = 'Unknown error';
+            }
+            if (d.command) {
+              errorMsg = `Command "${d.command}" failed: ${errorMsg}`;
+            }
+          }
+          if (!errorMsg) errorMsg = 'Unknown error';
+
+          // 附加工具的 required 参数提示，帮助 LLM 自我修正
           const tool = this.options.toolRegistry.get(r.toolCall.name);
           const requiredHint = tool?.inputSchema?.required?.length
             ? `\n  Required parameters: ${tool.inputSchema.required.join(', ')}`
             : '';
-          return `${r.toolCall.name}: 失败 - ${r.error}${requiredHint}`;
+          return `${r.toolCall.name}: 失败 - ${errorMsg}${requiredHint}`;
         }).join('\n');
 
         const toolResultMsg = `工具执行结果:\n${toolResultsText}`;
@@ -813,10 +831,22 @@ export class AgentLoop {
       ? `\n### 已安装技能\n${this.options.userSkills.map(s => `- ${s.slug}: ${s.description}`).join('\n')}\n`
       : '';
 
+    // 操作系统信息
+    const platform = process.platform;
+    const isWindows = platform === 'win32';
+    const isMac = platform === 'darwin';
+    const osInfo = isWindows ? 'Windows' : isMac ? 'macOS' : 'Linux';
+    const shellHint = isWindows
+      ? '\n**注意**: 当前是 Windows 系统，shell 命令应使用 cmd 语法（如 `dir`、`type`、`copy`）\n- 列出目录: `dir` 或 `dir /s /b`（递归）\n- 显示文件内容: `type <file>`\n- 或使用 PowerShell: `powershell -Command "Get-ChildItem"`'
+      : isMac
+      ? '\n**注意**: 当前是 macOS 系统，shell 命令使用 bash/Unix 语法\n- 列出目录: `ls` 或 `ls -la`\n- 显示文件内容: `cat <file>`\n- 或使用 zsh/macOS 特定命令'
+      : '\n**注意**: 当前是 Linux 系统，shell 命令使用 bash/Unix 语法\n- 列出目录: `ls` 或 `ls -la`\n- 显示文件内容: `cat <file>`';
+
     return `你是编程助手 ${this.options.agent.name}。
 
 ## 工作环境
-当前目录: ${cwd}
+- 操作系统: ${osInfo}
+- 当前目录: ${cwd}${shellHint}
 
 ## 重要：工具调用规范
 - 调用工具时必须使用 tool_use 格式，不要在文本中描述工具调用

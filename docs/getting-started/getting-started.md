@@ -43,6 +43,7 @@ cat > ~/.tramber/settings.json << EOF
   "model": "glm-4.7",
   "provider": "anthropic",
   "scene": "coding",
+  "maxTokens": 16384,
   "maxIterations": 10,
   "enableExperience": true,
   "enableRoutine": true
@@ -56,6 +57,7 @@ cat > ~/.tramber/settings.json << EOF
   "model": "claude-sonnet-4-6",
   "provider": "anthropic",
   "scene": "coding",
+  "maxTokens": 16384,
   "maxIterations": 10,
   "enableExperience": true,
   "enableRoutine": true
@@ -194,6 +196,46 @@ tramber config --list
 # 设置配置
 tramber config --set model=claude-sonnet-4-6
 ```
+
+### 3.3 Web Client
+
+通过浏览器访问 Server 直接提供的 Web UI。
+
+#### 生产模式（推荐）
+
+```bash
+# 1. 构建 Web Client
+pnpm --filter @tramber/web build
+
+# 2. 启动 Server
+tramber serve
+```
+
+#### 开发模式（热重载）
+
+```bash
+# 1. 启动 Server（新终端窗口）
+tramber serve
+
+# 2. 启动 Web Client watch 模式（项目根目录）
+pnpm --filter @tramber/web dev
+```
+
+#### 访问界面
+
+浏览器打开 `http://localhost:3100`，即可看到：
+- 顶栏：连接状态
+- 聊天区：实时流式输出、工具调用展示
+- 输入框：发送任务指令
+- 状态栏：WebSocket 连接状态
+
+#### Web 界面功能
+
+- **自动连接**：页面打开后自动连接 Server (`ws://localhost:3100/ws`)
+- **流式输出**：AI 回复逐字显示
+- **工具调用展示**：显示工具名、参数、执行结果
+- **权限确认**：弹出对话框确认危险操作
+- **自动重连**：连接断开后自动尝试重连
 
 ## 4. 在代码中使用
 

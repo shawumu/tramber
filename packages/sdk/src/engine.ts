@@ -307,7 +307,7 @@ export class TramberEngine {
           description: 'AI Assisted Programming Assistant',
           sceneId: options.sceneId ?? 'coding',
           temperature: 0.7,
-          maxTokens: 4096
+          maxTokens: 16384
         },
         provider: this.provider!,
         toolRegistry: this.toolRegistry,
