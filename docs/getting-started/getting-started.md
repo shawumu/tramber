@@ -15,6 +15,32 @@ set ANTHROPIC_API_KEY=your-api-key-here
 export ANTHROPIC_API_KEY="your-api-key-here"
 ```
 
+### 使用 OpenAI API
+
+```bash
+# Windows (PowerShell)
+$env:OPENAI_API_KEY="your-openai-api-key"
+
+# Windows (CMD)
+set OPENAI_API_KEY=your-openai-api-key
+
+# Linux/Mac
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+### 使用 Google Gemini API
+
+```bash
+# Windows (PowerShell)
+$env:GEMINI_API_KEY="your-gemini-api-key"
+
+# Windows (CMD)
+set GEMINI_API_KEY=your-gemini-api-key
+
+# Linux/Mac
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
 ### 使用智谱AI代理 (推荐)
 
 ```bash
@@ -35,7 +61,49 @@ export ANTHROPIC_MODEL="glm-4.7"
 # 创建配置目录
 mkdir ~/.tramber
 
-# 创建配置文件 (使用智谱AI)
+# 使用 Anthropic 官方 API
+cat > ~/.tramber/settings.json << EOF
+{
+  "apiKey": "your-anthropic-key",
+  "model": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "scene": "coding",
+  "maxTokens": 16384,
+  "maxIterations": 10,
+  "enableExperience": true,
+  "enableRoutine": true
+}
+EOF
+
+# 或者使用 OpenAI API
+cat > ~/.tramber/settings.json << EOF
+{
+  "apiKey": "your-openai-key",
+  "model": "gpt-4o",
+  "provider": "openai",
+  "scene": "coding",
+  "maxTokens": 16384,
+  "maxIterations": 10,
+  "enableExperience": true,
+  "enableRoutine": true
+}
+EOF
+
+# 或者使用 Google Gemini API
+cat > ~/.tramber/settings.json << EOF
+{
+  "apiKey": "your-gemini-key",
+  "model": "gemini-2.0-flash",
+  "provider": "gemini",
+  "scene": "coding",
+  "maxTokens": 16384,
+  "maxIterations": 10,
+  "enableExperience": true,
+  "enableRoutine": true
+}
+EOF
+
+# 或者使用智谱AI代理
 cat > ~/.tramber/settings.json << EOF
 {
   "apiKey": "your-zhipu-token",
@@ -49,21 +117,17 @@ cat > ~/.tramber/settings.json << EOF
   "enableRoutine": true
 }
 EOF
-
-# 或者使用 Anthropic 官方 API
-cat > ~/.tramber/settings.json << EOF
-{
-  "apiKey": "your-anthropic-key",
-  "model": "claude-sonnet-4-6",
-  "provider": "anthropic",
-  "scene": "coding",
-  "maxTokens": 16384,
-  "maxIterations": 10,
-  "enableExperience": true,
-  "enableRoutine": true
-}
-EOF
 ```
+
+**支持的 Provider 和模型：**
+
+| Provider | 环境变量 | 默认模型 | 可选模型 |
+|----------|---------|---------|---------|
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` | `claude-opus-4-6`, `claude-haiku-4-5` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o` | `gpt-4.1`, `o4-mini`, `gpt-4o-mini` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` | `gemini-2.5-pro`, `gemini-2.5-flash` |
+
+> **提示**：智谱AI等兼容 Anthropic API 格式的代理服务，设置 `provider: "anthropic"` + `baseURL` 即可使用。
 
 ## 2. 构建
 
@@ -242,9 +306,11 @@ pnpm --filter @tramber/web dev
 ```typescript
 import { TramberEngine } from '@tramber/sdk';
 
-// 创建引擎
+// 创建引擎 — 支持 anthropic / openai / gemini
 const engine = new TramberEngine({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+  provider: 'anthropic',                              // 或 'openai', 'gemini'
+  apiKey: process.env.ANTHROPIC_API_KEY,              // 或 OPENAI_API_KEY, GEMINI_API_KEY
+  model: 'claude-sonnet-4-6',                         // 或 'gpt-4o', 'gemini-2.0-flash'
   workspacePath: process.cwd()
 });
 
@@ -312,7 +378,7 @@ Goodbye!
 Error: API Key is required. Set ANTHROPIC_API_KEY environment variable or pass apiKey option.
 ```
 
-解决方法：设置 `ANTHROPIC_API_KEY` 环境变量或在配置文件中设置 `apiKey`。
+解决方法：根据所选 provider 设置对应环境变量（`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`），或在配置文件中设置 `apiKey`。
 
 ### 模块未找到错误
 
