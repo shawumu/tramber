@@ -4,7 +4,7 @@
  */
 
 export interface ProviderConfig {
-  type: 'anthropic' | 'openai' | 'custom';
+  type: 'anthropic' | 'openai' | 'gemini' | 'custom';
   apiKey: string;
   model?: string;
   baseURL?: string;
@@ -36,6 +36,7 @@ export interface ChatResponse {
 export interface ChatResponseChunk {
   content: string;
   toolCalls?: ToolCall[];
+  usage?: TokenUsage;
   delta?: {
     role?: string;
     content?: string;

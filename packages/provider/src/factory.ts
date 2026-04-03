@@ -4,6 +4,8 @@
  */
 
 import { AnthropicProvider } from './anthropic/client.js';
+import { OpenAIProvider } from './openai/client.js';
+import { GeminiProvider } from './gemini/client.js';
 import type { AIProvider, ProviderConfig } from './types.js';
 import type { ProviderRegistry } from './registry.js';
 
@@ -23,7 +25,17 @@ export class DefaultProviderFactory implements ProviderFactory {
         });
 
       case 'openai':
-        throw new Error('OpenAI provider not implemented yet');
+        return new OpenAIProvider({
+          apiKey: config.apiKey,
+          model: config.model,
+          baseURL: config.baseURL
+        });
+
+      case 'gemini':
+        return new GeminiProvider({
+          apiKey: config.apiKey,
+          model: config.model
+        });
 
       case 'custom':
         throw new Error('Custom provider not implemented yet');

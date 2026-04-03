@@ -17,8 +17,10 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "@google/generative-ai": "^0.24.1",
     "@tramber/shared": "workspace:*",
-    "@anthropic-ai/sdk": "^0.32.0"
+    "openai": "^6.33.0"
   },
   "devDependencies": {
     "tsup": "^8.0.1",

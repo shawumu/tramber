@@ -7,7 +7,7 @@
  */
 
 import type { Message, TokenUsage, ProjectInfo } from '@tramber/shared';
-import { generateId } from '@tramber/shared';
+import { generateId, estimateTokenCount, estimateMessagesTokens, estimateToolsTokens } from '@tramber/shared';
 
 export interface Conversation {
   id: string;
@@ -107,12 +107,18 @@ export function updateTokenUsage(conversation: Conversation, usage: Partial<Toke
 }
 
 /**
- * 估算当前 token 使用量（粗略：4 字符 ≈ 1 token）
+ * 估算当前 token 使用量
+ *
+ * 使用 CJK 感知的启发式算法：
+ * - CJK 字符：~1.5 tokens/char
+ * - ASCII 文本：~4 chars/token
+ * - 消息格式开销：每条消息 ~4 tokens
  */
-export function estimateTokens(conversation: Conversation): number {
-  const systemPromptTokens = conversation.systemPrompt.length / 4;
-  const messagesTokens = conversation.messages.reduce((sum, msg) => sum + msg.content.length / 4, 0);
-  return Math.ceil(systemPromptTokens + messagesTokens);
+export function estimateTokens(conversation: Conversation, toolCount = 0): number {
+  const systemTokens = estimateTokenCount(conversation.systemPrompt);
+  const messagesTokens = estimateMessagesTokens(conversation.messages);
+  const toolsTokens = estimateToolsTokens(toolCount);
+  return Math.ceil(systemTokens + messagesTokens + toolsTokens);
 }
 
 /**

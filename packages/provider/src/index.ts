@@ -5,5 +5,7 @@
 
 export * from './types.js';
 export * from './anthropic/client.js';
+export * from './openai/client.js';
+export * from './gemini/client.js';
 export * from './registry.js';
 export * from './factory.js';

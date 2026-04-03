@@ -8,7 +8,8 @@
 
 import { ToolRegistryImpl } from '@tramber/tool';
 import { readFileTool, writeFileTool, editFileTool, globTool, grepTool, execTool } from '@tramber/tool';
-import { AnthropicProvider } from '@tramber/provider';
+import { AnthropicProvider, providerFactory } from '@tramber/provider';
+import type { AIProvider } from '@tramber/provider';
 import { AgentLoop, type AgentLoopStep, ContextBuffer } from '@tramber/agent';
 import type { Conversation } from '@tramber/agent';
 import { SceneManager, CODING_SCENE_CONFIG } from '@tramber/scene';
@@ -31,7 +32,7 @@ import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
  */
 export class TramberEngine {
   private toolRegistry: ToolRegistryImpl;
-  private provider: AnthropicProvider | null = null;
+  private provider: AIProvider | null = null;
   private configLoader: ConfigLoader;
   private permissionChecker: PermissionChecker;
   private sceneManager: SceneManager;
@@ -145,8 +146,10 @@ export class TramberEngine {
 
     // 如果有 API Key，初始化 Provider
     if (this.options.apiKey) {
-      this.provider = new AnthropicProvider({
+      this.provider = providerFactory.create({
+        type: this.options.provider ?? 'anthropic',
         apiKey: this.options.apiKey,
+        model: this.options.model,
         baseURL: this.options.baseURL
       });
     }
@@ -484,13 +487,15 @@ export class TramberEngine {
    * 更新配置
    */
   updateConfig(options: Partial<TramberEngineOptions>): void {
-    const shouldReinitProvider = options.apiKey || options.baseURL;
+    const shouldReinitProvider = options.apiKey || options.baseURL || options.provider;
     Object.assign(this.options, options);
 
-    // 如果更新了 API Key 或 baseURL，重新初始化 Provider
+    // 如果更新了 API Key / baseURL / provider，重新初始化 Provider
     if (shouldReinitProvider && this.options.apiKey) {
-      this.provider = new AnthropicProvider({
+      this.provider = providerFactory.create({
+        type: this.options.provider ?? 'anthropic',
         apiKey: this.options.apiKey,
+        model: this.options.model,
         baseURL: this.options.baseURL
       });
     }

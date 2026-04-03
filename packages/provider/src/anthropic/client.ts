@@ -188,6 +188,7 @@ export class AnthropicProvider implements AIProvider {
       const stream = await this.client.messages.create(params);
 
       let currentToolUse: { id?: string; name?: string; input: string } | null = null;
+      let inputTokens = 0;
 
       for await (const event of stream) {
         // 记录每个事件的原始内容
@@ -198,6 +199,10 @@ export class AnthropicProvider implements AIProvider {
 
         switch (event.type) {
           case 'message_start':
+            // Capture input token count from message_start
+            if ((event as any).message?.usage?.input_tokens) {
+              inputTokens = (event as any).message.usage.input_tokens;
+            }
             break;
 
           case 'content_block_start':
@@ -279,9 +284,16 @@ export class AnthropicProvider implements AIProvider {
                 stopReason: (event as any).delta?.stop_reason
               });
             }
+            // Extract output tokens from message_delta usage
+            const outputTokens = (event as any).usage?.output_tokens ?? 0;
             yield {
               content: '',
-              delta: {}
+              delta: {},
+              usage: {
+                input: inputTokens,
+                output: outputTokens,
+                total: inputTokens + outputTokens
+              }
             };
             break;
 

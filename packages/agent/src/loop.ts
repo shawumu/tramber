@@ -157,6 +157,11 @@ export class AgentLoop {
         : await this.callLLM(context);
       const content = response.content || '';
 
+      // 更新 token 使用量
+      if (response.usage) {
+        updateTokenUsage(conversation, response.usage);
+      }
+
       debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, 'LLM response received', {
         hasContent: !!content,
         contentLength: content.length,
@@ -511,7 +516,7 @@ export class AgentLoop {
   /**
    * 调用 LLM
    */
-  private async callLLM(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }> }> {
+  private async callLLM(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }>; usage?: { input?: number; output?: number; total?: number } }> {
     const step: AgentLoopStep = {
       iteration: context.iterations ?? 0,
       phase: 'action'
@@ -575,7 +580,7 @@ export class AgentLoop {
    *
    * 通过 onStep 逐步发送 text_delta，完整收集所有 tool_calls 后返回。
    */
-  private async callLLMStream(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }> }> {
+  private async callLLMStream(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }>; usage?: { input?: number; output?: number; total?: number } }> {
     const streamMethod = this.options.provider.stream;
     if (!streamMethod) {
       // Provider 不支持流式，回退到非流式
@@ -615,6 +620,7 @@ export class AgentLoop {
 
       let fullContent = '';
       const allToolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }> = [];
+      let streamUsage: { input?: number; output?: number; total?: number } | undefined;
 
       const stream = streamMethod.call(this.options.provider, chatOptions);
 
@@ -634,6 +640,11 @@ export class AgentLoop {
         // 工具调用 — 完整收集
         if (chunk.toolCalls) {
           allToolCalls.push(...chunk.toolCalls);
+        }
+
+        // 收集 usage（通常在最后一个 chunk 中）
+        if (chunk.usage) {
+          streamUsage = chunk.usage;
         }
       }
 
@@ -658,7 +669,8 @@ export class AgentLoop {
 
       return {
         content: fullContent,
-        toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined
+        toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+        usage: streamUsage
       };
     } catch (error) {
       debugError(NAMESPACE.AGENT_LOOP, 'LLM stream failed', error);
