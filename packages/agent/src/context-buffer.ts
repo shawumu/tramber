@@ -17,6 +17,10 @@ export interface ContextSnapshot {
   iterations: number;
   success: boolean;
   terminatedReason?: string;
+  /** 意识体树快照（Stage 8） */
+  consciousnessTree?: object;
+  /** 记忆索引快照（Stage 8） */
+  memoryIndex?: Array<{ id: string; phase: string; type: string; summary: string }>;
 }
 
 export interface ContextBufferOptions {

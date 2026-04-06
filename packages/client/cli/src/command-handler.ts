@@ -142,8 +142,9 @@ export class CommandHandler {
       outputManager.writeln(`  Model:      ${context.config.model ?? 'claude-sonnet-4-6'}`);
       outputManager.writeln(`  Scene:      ${context.config.scene ?? 'coding'}`);
       outputManager.writeln(`  Max Iter:   ${String(context.config.maxIterations ?? 10)}`);
-      outputManager.writeln(`  Experience: ${context.config.enableExperience ? 'enabled' : 'disabled'}`);
-      outputManager.writeln(`  Routine:    ${context.config.enableRoutine ? 'enabled' : 'disabled'}`);
+      outputManager.writeln(`  Experience:    ${context.config.enableExperience ? 'enabled' : 'disabled'}`);
+      outputManager.writeln(`  Routine:       ${context.config.enableRoutine ? 'enabled' : 'disabled'}`);
+      outputManager.writeln(`  Consciousness: ${context.config.enableConsciousness ? 'enabled' : 'disabled'}`);
       outputManager.writeln('');
     } else {
       const [key, value] = args;

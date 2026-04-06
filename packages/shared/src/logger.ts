@@ -80,6 +80,12 @@ export const NAMESPACE = {
   ROUTINE: 'tramber:routine',
   ROUTINE_MANAGER: 'tramber:routine:manager',
   ROUTINE_SOLIDIFIER: 'tramber:routine:solidifier',
+
+  // Consciousness 层
+  CONSCIOUSNESS: 'tramber:consciousness',
+  CONSCIOUSNESS_MANAGER: 'tramber:consciousness:manager',
+  CONSCIOUSNESS_MEMORY: 'tramber:consciousness:memory',
+  CONSCIOUSNESS_CONTEXT: 'tramber:consciousness:context',
 } as const;
 
 export type NamespaceType = typeof NAMESPACE[keyof typeof NAMESPACE];

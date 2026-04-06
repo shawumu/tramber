@@ -10,7 +10,7 @@ import { ToolRegistryImpl } from '@tramber/tool';
 import { readFileTool, writeFileTool, editFileTool, globTool, grepTool, execTool } from '@tramber/tool';
 import { AnthropicProvider, providerFactory } from '@tramber/provider';
 import type { AIProvider } from '@tramber/provider';
-import { AgentLoop, type AgentLoopStep, ContextBuffer } from '@tramber/agent';
+import { AgentLoop, type AgentLoopStep, ContextBuffer, ConsciousnessManager, MemoryStore, ContextStorage } from '@tramber/agent';
 import type { Conversation } from '@tramber/agent';
 import { SceneManager, CODING_SCENE_CONFIG } from '@tramber/scene';
 import { SkillLoader, SkillRegistry, type SkillManifest } from '@tramber/skill';
@@ -26,6 +26,8 @@ import type {
   TramberResponse
 } from './types.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
+import { registerVirtualTools, unregisterVirtualTools, type VirtualToolContext } from '@tramber/agent';
+import { buildSelfAwarenessPrompt } from '@tramber/agent';
 
 /**
  * Tramber Engine - 核心引擎入口点
@@ -45,15 +47,21 @@ export class TramberEngine {
   private experienceManager: ExperienceManager;
   private agentLoopFactory: (options: any) => AgentLoop;
   private contextBuffer: ContextBuffer;
+  private consciousnessManager: ConsciousnessManager | null = null;
+  private memoryStore: MemoryStore | null = null;
+  private contextStorage: ContextStorage | null = null;
 
   private options: TramberEngineOptions & {
     workspacePath: string;
     configPath: string;
     enableExperience: boolean;
     enableRoutine: boolean;
+    enableConsciousness: boolean;
   };
   private isInitialized = false;
   private permissionConfigLoaded = false;
+  /** 当前会话 ID（多轮对话复用，确保 context 存入同一目录） */
+  private currentTaskId: string | null = null;
 
   constructor(options: TramberEngineOptions = {}) {
     const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? '';
@@ -68,7 +76,8 @@ export class TramberEngine {
       workspacePath: options.workspacePath ?? process.cwd(),
       configPath: options.configPath ?? join(process.env.HOME ?? process.env.USERPROFILE ?? '', '.tramber', 'settings.json'),
       enableExperience: options.enableExperience ?? true,
-      enableRoutine: options.enableRoutine ?? true
+      enableRoutine: options.enableRoutine ?? true,
+      enableConsciousness: options.enableConsciousness ?? true
     };
 
     // 初始化 Config Loader (使用 workspacePath 作为项目根目录)
@@ -120,12 +129,31 @@ export class TramberEngine {
     this.routineSolidifier = new RoutineSolidifier();
 
     // 初始化 Context Buffer（调试用）
+    // 意识体模式下禁用旧的扁平 ContextBuffer，由 ContextStorage 替代
     const contextBufferDir = join(this.options.workspacePath, '.tramber', 'contexts');
     this.contextBuffer = new ContextBuffer({
       saveDir: contextBufferDir,
       maxFiles: 10,
-      enabled: true
+      enabled: !this.options.enableConsciousness
     });
+
+    // 初始化意识体组件（Stage 8）
+    if (this.options.enableConsciousness) {
+      const memoryDir = join(this.options.workspacePath, '.tramber', 'memory');
+      this.memoryStore = new MemoryStore({ rootDir: memoryDir });
+      this.contextStorage = new ContextStorage({
+        rootDir: contextBufferDir,
+        maxSnapshotsPerTask: 20,
+        enabled: true
+      });
+      this.consciousnessManager = new ConsciousnessManager({
+        agentId: 'tramber-agent',
+        memoryStore: this.memoryStore,
+        contextStorage: this.contextStorage,
+        maxIterations: 30
+      });
+      debug(NAMESPACE.CONSCIOUSNESS, LogLevel.BASIC, 'Consciousness system initialized');
+    }
 
     // 初始化 Agent Loop Factory
     this.agentLoopFactory = (options: any) => new AgentLoop({
@@ -256,9 +284,10 @@ export class TramberEngine {
     }
 
     try {
-      // 创建任务
+      // 创建任务（多轮对话复用同一 task ID，确保 context 存入同一目录）
+      const taskId = this.currentTaskId ?? conversation?.id ?? `task-${Date.now()}`;
       const task: Task = {
-        id: `task-${Date.now()}`,
+        id: taskId,
         description,
         sceneId: options.sceneId ?? 'coding',
         isComplete: false,
@@ -300,8 +329,75 @@ export class TramberEngine {
       // 创建 Agent Loop
       debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Creating Agent Loop', {
         hasOnPermissionRequired: !!options.onPermissionRequired,
-        maxIterations: options.maxIterations ?? 10
+        maxIterations: options.maxIterations ?? 10,
+        consciousness: !!this.consciousnessManager
       });
+
+      // 意识体模式：注册虚拟工具并使用意识体 prompt
+      if (this.consciousnessManager) {
+        const cm = this.consciousnessManager;
+        const rootState = cm.createRoot(
+          task.id,
+          description,
+          options.sceneId ?? 'coding'
+        );
+
+        // 创建虚拟工具上下文
+        const virtualToolCtx: VirtualToolContext = {
+          consciousnessManager: cm,
+          createLoop: (childOpts) => {
+            const childRegistry = new ToolRegistryImpl();
+            childRegistry.register(readFileTool);
+            childRegistry.register(writeFileTool);
+            childRegistry.register(editFileTool);
+            childRegistry.register(globTool);
+            childRegistry.register(grepTool);
+            childRegistry.register(execTool);
+            // 子意识也注册审批和报告
+            registerVirtualTools(childRegistry, {
+              consciousnessManager: cm,
+              createLoop: () => { throw new Error('Nested child creation not supported'); },
+              currentConsciousnessId: 'child',
+              onPermissionRequired: options.onPermissionRequired
+            }, 'execution');
+
+            return new AgentLoop({
+              agent: {
+                id: 'tramber-agent',
+                name: 'Tramber',
+                description: 'AI Assisted Programming Assistant',
+                sceneId: options.sceneId ?? 'coding',
+                temperature: 0.7,
+                maxTokens: 16384
+              },
+              provider: this.provider!,
+              toolRegistry: childRegistry,
+              permissionChecker: this.permissionChecker,
+              maxIterations: childOpts.maxIterations ?? 10,
+              stream: options.stream,
+              onPermissionRequired: options.onPermissionRequired,
+              userSkills: this.userSkillRegistry.getEnabled(),
+              contextBuffer: this.contextBuffer
+            });
+          },
+          currentConsciousnessId: 'root',
+          onPermissionRequired: options.onPermissionRequired
+        };
+
+        // 注册虚拟工具到主 registry
+        registerVirtualTools(this.toolRegistry, virtualToolCtx, 'self_awareness');
+
+        // 通知前端意识体状态
+        onProgress({
+          type: 'consciousness',
+          consciousness: {
+            id: 'root',
+            level: 'self_awareness',
+            status: 'thinking',
+            taskDescription: description
+          }
+        });
+      }
 
       const agentLoop = this.agentLoopFactory({
         agent: {
@@ -365,11 +461,29 @@ export class TramberEngine {
       onProgress({ type: 'step', content: 'Executing task...' });
       const result = await agentLoop.execute(task, conversation);
 
+      // 首轮执行后锁定 conversation ID，后续轮复用同一 task ID
+      if (result.conversation?.id) {
+        this.currentTaskId = result.conversation.id;
+      }
+
       debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Task execution completed', {
         success: result.success,
         iterations: result.iterations,
         terminatedReason: result.terminatedReason
       });
+
+      // 意识体模式：finalize 并清理虚拟工具
+      if (this.consciousnessManager) {
+        // 用 engine 的 currentTaskId（可能已被首轮锁定为 conversation.id）
+        // 覆盖 cm 内部的 taskId，确保多轮对话存入同一目录
+        const finalTaskId = this.currentTaskId ?? task.id;
+        this.consciousnessManager.finalize(
+          result.conversation.messages.map(m => ({ role: m.role, content: m.content })),
+          result.success,
+          finalTaskId
+        );
+        unregisterVirtualTools(this.toolRegistry);
+      }
 
       // 记录经验
       if (result.success && this.options.enableExperience) {

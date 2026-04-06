@@ -180,8 +180,7 @@ export class TramberServer {
     await this.fastify.register(fastifyStatic, {
       root: webDir,
       prefix: '/',
-      wildcard: false,
-      decorateReply: false
+      wildcard: false
     });
 
     // SPA fallback：未匹配的路由返回 index.html

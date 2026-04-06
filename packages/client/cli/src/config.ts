@@ -23,6 +23,8 @@ export interface TramberConfig {
   enableExperience?: boolean;
   /** 是否启用 Routine */
   enableRoutine?: boolean;
+  /** 是否启用意识体模式（Stage 8） */
+  enableConsciousness?: boolean;
 }
 
 export interface CliContext {
@@ -37,7 +39,8 @@ const DEFAULT_CONFIG: TramberConfig = {
   scene: 'coding',
   maxIterations: 10,
   enableExperience: true,
-  enableRoutine: true
+  enableRoutine: true,
+  enableConsciousness: true
 };
 
 /**

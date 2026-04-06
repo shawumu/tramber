@@ -23,3 +23,9 @@ export * from './experience.js';
 
 // Permission
 export * from './permission.js';
+
+// Consciousness
+export * from './consciousness.js';
+
+// Team (multi-agent reserved)
+export * from './team.js';

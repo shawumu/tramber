@@ -22,6 +22,8 @@ export interface TramberEngineOptions {
   enableExperience?: boolean;
   /** 是否启用 Routine */
   enableRoutine?: boolean;
+  /** 是否启用意识体模式（Stage 8） */
+  enableConsciousness?: boolean;
 }
 
 export interface ExecuteOptions {
@@ -38,12 +40,19 @@ export interface ExecuteOptions {
 }
 
 export interface ProgressUpdate {
-  type: 'step' | 'thinking' | 'tool_call' | 'tool_result' | 'complete' | 'error' | 'text_delta';
+  type: 'step' | 'thinking' | 'tool_call' | 'tool_result' | 'complete' | 'error' | 'text_delta' | 'consciousness';
   iteration?: number;
   content?: string;
   toolCall?: { name: string; parameters: Record<string, unknown> };
   toolResult?: { success: boolean; data?: unknown; error?: string };
   error?: string;
+  /** 意识体信息 */
+  consciousness?: {
+    id: string;
+    level: 'self_awareness' | 'execution';
+    status: string;
+    taskDescription?: string;
+  };
 }
 
 export interface TramberResponse {
