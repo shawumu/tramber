@@ -12,12 +12,13 @@
  * - 无工具调用 → 输出给用户，等待回应
  */
 
-import type { Agent, AgentContext, Task } from '@tramber/shared';
+import type { Agent, AgentContext, Task, SelfAwarenessState } from '@tramber/shared';
 import type { AIProvider } from '@tramber/provider';
 import type { ToolRegistry } from '@tramber/tool';
 import type { PermissionChecker } from '@tramber/permission';
 import type { SkillManifest } from '@tramber/skill';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
+import { buildSelfAwarenessPrompt } from './consciousness-prompts.js';
 import {
   createConversation,
   addMessage,
@@ -43,6 +44,8 @@ export interface AgentLoopOptions {
   userSkills?: SkillManifest[];
   /** 上下文缓冲区（调试用） */
   contextBuffer?: ContextBuffer;
+  /** 意识体状态（注入自我感知意识的 system prompt） */
+  consciousnessState?: SelfAwarenessState;
 }
 
 export interface AgentLoopStep {
@@ -854,7 +857,7 @@ export class AgentLoop {
       ? '\n**注意**: 当前是 macOS 系统，shell 命令使用 bash/Unix 语法\n- 列出目录: `ls` 或 `ls -la`\n- 显示文件内容: `cat <file>`\n- 或使用 zsh/macOS 特定命令'
       : '\n**注意**: 当前是 Linux 系统，shell 命令使用 bash/Unix 语法\n- 列出目录: `ls` 或 `ls -la`\n- 显示文件内容: `cat <file>`';
 
-    return `你是编程助手 ${this.options.agent.name}。
+    const basePrompt = `你是编程助手 ${this.options.agent.name}。
 
 ## 工作环境
 - 操作系统: ${osInfo}
@@ -886,6 +889,13 @@ ${toolList}
 - 工具失败时分析错误并重试
 ${skillsSection}
 `;
+
+    // 意识体模式：在基础 prompt 上注入自我感知意识身份
+    if (this.options.consciousnessState) {
+      return buildSelfAwarenessPrompt(basePrompt, this.options.consciousnessState);
+    }
+
+    return basePrompt;
   }
 
   private addStep(step: AgentLoopStep): void {

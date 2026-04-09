@@ -18,7 +18,7 @@ import { RoutineManager, RoutineSolidifier } from '@tramber/routine';
 import { ExperienceStorage, ExperienceRetriever, ExperienceManager } from '@tramber/experience';
 import { ConfigLoader, PermissionChecker } from '@tramber/permission';
 import { join } from 'path';
-import type { Task, Scene, Routine, Experience } from '@tramber/shared';
+import type { Task, Scene, Routine, Experience, SelfAwarenessState } from '@tramber/shared';
 import type {
   TramberEngineOptions,
   ExecuteOptions,
@@ -27,7 +27,6 @@ import type {
 } from './types.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import { registerVirtualTools, unregisterVirtualTools, type VirtualToolContext } from '@tramber/agent';
-import { buildSelfAwarenessPrompt } from '@tramber/agent';
 
 /**
  * Tramber Engine - 核心引擎入口点
@@ -334,9 +333,10 @@ export class TramberEngine {
       });
 
       // 意识体模式：注册虚拟工具并使用意识体 prompt
+      let rootState: SelfAwarenessState | undefined;
       if (this.consciousnessManager) {
         const cm = this.consciousnessManager;
-        const rootState = cm.createRoot(
+        rootState = cm.createRoot(
           task.id,
           description,
           options.sceneId ?? 'coding'
@@ -415,6 +415,7 @@ export class TramberEngine {
         stream: options.stream,
         onPermissionRequired: options.onPermissionRequired,
         userSkills: this.userSkillRegistry.getEnabled(),
+        consciousnessState: rootState,
         onStep: (step: AgentLoopStep) => {
           // 发送工具调用进度（优先级最高）
           if (step.toolCall) {
@@ -477,11 +478,12 @@ export class TramberEngine {
         // 用 engine 的 currentTaskId（可能已被首轮锁定为 conversation.id）
         // 覆盖 cm 内部的 taskId，确保多轮对话存入同一目录
         const finalTaskId = this.currentTaskId ?? task.id;
-        this.consciousnessManager.finalize(
-          result.conversation.messages.map(m => ({ role: m.role, content: m.content })),
-          result.success,
-          finalTaskId
-        );
+        // 构建完整消息列表：system prompt + 所有对话消息
+        const fullMessages: Array<{ role: string; content: string }> = [
+          { role: 'system', content: result.conversation.systemPrompt },
+          ...result.conversation.messages.map(m => ({ role: m.role, content: m.content }))
+        ];
+        this.consciousnessManager.finalize(fullMessages, result.success, finalTaskId);
         unregisterVirtualTools(this.toolRegistry);
       }
 
