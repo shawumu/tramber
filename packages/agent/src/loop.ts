@@ -857,9 +857,7 @@ export class AgentLoop {
       ? '\n**注意**: 当前是 macOS 系统，shell 命令使用 bash/Unix 语法\n- 列出目录: `ls` 或 `ls -la`\n- 显示文件内容: `cat <file>`\n- 或使用 zsh/macOS 特定命令'
       : '\n**注意**: 当前是 Linux 系统，shell 命令使用 bash/Unix 语法\n- 列出目录: `ls` 或 `ls -la`\n- 显示文件内容: `cat <file>`';
 
-    const basePrompt = `你是编程助手 ${this.options.agent.name}。
-
-## 工作环境
+    const infoPrompt = `## 工作环境
 - 操作系统: ${osInfo}
 - 当前目录: ${cwd}${shellHint}
 
@@ -890,12 +888,15 @@ ${toolList}
 ${skillsSection}
 `;
 
-    // 意识体模式：在基础 prompt 上注入自我感知意识身份
+    // 意识体模式：由意识体 prompt 定义身份，infoPrompt 作为参考信息追加在后
     if (this.options.consciousnessState) {
-      return buildSelfAwarenessPrompt(basePrompt, this.options.consciousnessState);
+      return buildSelfAwarenessPrompt(infoPrompt, this.options.consciousnessState);
     }
 
-    return basePrompt;
+    // 普通模式：编程助手身份 + 参考信息
+    return `你是编程助手 ${this.options.agent.name}。
+
+${infoPrompt}`;
   }
 
   private addStep(step: AgentLoopStep): void {

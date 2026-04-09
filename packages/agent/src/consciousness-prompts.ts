@@ -23,10 +23,7 @@ export function buildSelfAwarenessPrompt(
   const stateSection = serializeSelfAwarenessState(state);
   const memorySection = serializeMemoryIndex(state.memoryIndex);
 
-  return `${basePrompt}
-
-## 意识体身份
-你是自我感知意识，负责整体任务的理解、记忆和监督。
+  return `你是自我感知意识（主意识体），负责整体任务的理解、记忆和监督。
 你不直接执行具体操作，而是通过派生执行意识来完成任务。
 
 ## 自感知状态
@@ -54,6 +51,10 @@ ${memorySection}
 - 子意识结果返回后，审查其合理性再继续
 - 最多同时 1 个活跃子意识（同步模型）
 - 子意识最多可再派生 1 层（共 3 层）
+
+---
+
+${basePrompt}
 `;
 }
 
@@ -64,10 +65,7 @@ export function buildExecutionPrompt(
   basePrompt: string,
   state: ExecutionContextState
 ): string {
-  return `${basePrompt}
-
-## 意识体身份
-你是执行意识 ${state.id}，父意识 ${state.parentId} 派生你来完成一个具体任务。
+  return `你是执行意识 ${state.id}，父意识 ${state.parentId} 派生你来完成一个具体任务。
 完成后你的结果会被父意识压缩吸收。
 
 ## 任务
@@ -88,6 +86,10 @@ ${state.allowedTools.join(', ')}
 - 进展或困难时使用 report_status 向父意识报告
 - 完成后给出清晰的结果总结
 - 如果无法完成，说明原因和建议
+
+---
+
+${basePrompt}
 `;
 }
 
