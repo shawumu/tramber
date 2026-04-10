@@ -19,6 +19,7 @@ export class SpawnSubTaskTool implements Tool {
   name = 'spawn_sub_task';
   description = '派生执行意识处理子任务。执行意识将独立运行，你会在其完成后收到压缩后的结果摘要。';
   category = 'execution' as const;
+  permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {
@@ -123,6 +124,10 @@ export class SpawnSubTaskTool implements Tool {
 
       // 8. 压缩结果
       consciousnessManager.updateStatus(this.context.currentConsciousnessId, 'compressing');
+      const fullMessages: Array<{ role: string; content: string }> = [
+        { role: 'system', content: conversation.systemPrompt },
+        ...conversation.messages.map(m => ({ role: m.role, content: m.content }))
+      ];
       const summary = consciousnessManager.compressResult(
         execState.id,
         {
@@ -134,7 +139,7 @@ export class SpawnSubTaskTool implements Tool {
           iterations: result.iterations,
           error: result.success ? undefined : result.error
         },
-        conversation.messages.map(m => ({ role: m.role, content: m.content }))
+        fullMessages
       );
       consciousnessManager.updateStatus(this.context.currentConsciousnessId, 'thinking');
 

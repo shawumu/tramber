@@ -25,7 +25,7 @@ import type {
   ProgressUpdate,
   TramberResponse
 } from './types.js';
-import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
+import { debug, debugError, NAMESPACE, LogLevel, generateId } from '@tramber/shared';
 import { registerVirtualTools, unregisterVirtualTools, type VirtualToolContext } from '@tramber/agent';
 
 /**
@@ -283,8 +283,9 @@ export class TramberEngine {
     }
 
     try {
-      // 创建任务（多轮对话复用同一 task ID，确保 context 存入同一目录）
-      const taskId = this.currentTaskId ?? conversation?.id ?? `task-${Date.now()}`;
+      // 统一 taskId：优先用已有 conversation.id，否则预生成一个
+      // 避免第一轮用 task-xxx 后续轮用 conv-xxx 导致 context 目录不一致
+      const taskId = this.currentTaskId ?? conversation?.id ?? generateId('conv');
       const task: Task = {
         id: taskId,
         description,
@@ -438,7 +439,8 @@ export class TramberEngine {
           }
 
           // 流式文本增量（由 callLLMStream 产生的 content 字段）
-          if (options.stream && step.content && !step.thinking) {
+          // 意识体模式下，守护意识的文本输出不发送给用户（只有 dispatch_task 结果才转发）
+          if (options.stream && step.content && !step.thinking && !this.consciousnessManager) {
             onProgress({
               type: 'text_delta',
               iteration: step.iteration,
@@ -448,7 +450,8 @@ export class TramberEngine {
           }
 
           // 发送普通步骤进度（只有没有 toolCall/toolResult 时才发送）
-          if (step.thinking || step.content) {
+          // 意识体模式下，守护意识的文本输出不发送给用户
+          if ((step.thinking || step.content) && !this.consciousnessManager) {
             onProgress({
               type: 'step',
               iteration: step.iteration,
@@ -460,6 +463,13 @@ export class TramberEngine {
 
       // 执行任务
       onProgress({ type: 'step', content: 'Executing task...' });
+
+      // 意识体模式：记录 user_turn 到 memory 流水账
+      if (this.consciousnessManager) {
+        const userSummary = description.length > 100 ? description.slice(0, 100) + '...' : description;
+        this.consciousnessManager.recordUserTurn('user', userSummary);
+      }
+
       const result = await agentLoop.execute(task, conversation);
 
       // 首轮执行后锁定 conversation ID，后续轮复用同一 task ID

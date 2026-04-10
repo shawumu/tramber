@@ -117,7 +117,8 @@ export class AgentLoop {
       toolRegistry: options.toolRegistry,
       permissionChecker: options.permissionChecker,
       onPermissionRequired: options.onPermissionRequired,
-      userSkills: options.userSkills
+      userSkills: options.userSkills,
+      consciousnessState: options.consciousnessState
     };
     this.contextBuffer = options.contextBuffer;
   }
@@ -268,6 +269,28 @@ export class AgentLoop {
           };
           this.addStep(postStep);
           this.options.onStep(postStep);
+        }
+
+        // 检查是否有 dispatch_task 返回了 isFinalAnswer（意识体模式下的最终回复）
+        const dispatchResult = toolResult.results.find(
+          (r: any) => r.toolCall.name === 'dispatch_task' && r.success && r.data?.isFinalAnswer
+        );
+        if (dispatchResult && dispatchResult.data) {
+          const summary = (dispatchResult.data as any).summary || '';
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'dispatch_task returned final answer', {
+            summaryLength: summary.length
+          });
+          // 将结果存入 conversation
+          if (summary) {
+            addMessage(conversation, { role: 'assistant', content: summary });
+          }
+          return {
+            success: true,
+            finalAnswer: summary,
+            steps: [...this.steps],
+            iterations: i + 1,
+            terminatedReason: 'completed'
+          };
         }
 
         // 将助手消息添加到上下文和 conversation（仅当有内容时）

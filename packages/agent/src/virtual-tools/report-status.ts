@@ -14,6 +14,7 @@ export class ReportStatusTool implements Tool {
   name = 'report_status';
   description = '向父意识报告执行进度。用于提供更新、报告困难。';
   category = 'execution' as const;
+  permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {

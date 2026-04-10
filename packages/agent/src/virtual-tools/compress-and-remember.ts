@@ -14,13 +14,14 @@ const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 export class CompressAndRememberTool implements Tool {
   id = 'compress_and_remember';
   name = 'compress_and_remember';
-  description = '将当前对话中的信息压缩并存入记忆。当对话变长或 context 接近阈值时使用。';
+  description = '将子意识完成后的结果记入记忆流水账。summary 必须是你（守护意识）写的简短摘要，用一句话概括用户请求和结果，不要复制子意识的原文。';
   category = 'execution' as const;
+  permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {
-      phase: { type: 'string', description: '当前任务阶段标签' },
-      summary: { type: 'string', description: '压缩后的概况' },
+      phase: { type: 'string', description: '子任务描述（简短标签）' },
+      summary: { type: 'string', description: '你写的简短摘要：用户请求了什么 + 最终结果（一句话，≤50字）' },
       keyDecisions: {
         type: 'array',
         items: { type: 'string', description: '关键决策' },
@@ -63,8 +64,10 @@ export class CompressAndRememberTool implements Tool {
 
     // 通过 memoryStore 直接存储
     const memoryStore = (consciousnessManager as any).memoryStore;
+    const currentTaskId = (consciousnessManager as any).currentTaskId;
     if (memoryStore) {
       memoryStore.store({
+        taskId: currentTaskId ?? undefined,
         phase: params.phase,
         type: 'conversation_summary',
         summary: params.summary,

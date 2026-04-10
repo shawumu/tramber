@@ -2,7 +2,8 @@
 /**
  * 意识体系统提示词模板
  *
- * 为自我感知意识和执行意识生成结构化的 system prompt。
+ * 守护意识（Guardian）：只调度，不执行
+ * 领域子意识（Domain Child）：按领域执行，可判断边界并上升
  */
 
 import type {
@@ -12,45 +13,40 @@ import type {
 } from '@tramber/shared';
 
 /**
- * 生成自我感知意识的系统提示词
- *
- * 在基础系统提示词之上，注入意识体身份和自感知状态。
+ * 生成守护意识的系统提示词
  */
 export function buildSelfAwarenessPrompt(
   basePrompt: string,
   state: SelfAwarenessState
 ): string {
-  const stateSection = serializeSelfAwarenessState(state);
+  const domainSection = serializeDomainState(state);
   const memorySection = serializeMemoryIndex(state.memoryIndex);
+  const rulesSection = state.rules.length > 0
+    ? `\n## 用户规则\n${state.rules.map(r => `- ${r}`).join('\n')}`
+    : '';
 
-  return `你是自我感知意识（主意识体），负责整体任务的理解、记忆和监督。
-你不直接执行具体操作，而是通过派生执行意识来完成任务。
+  return `你是 Tramber 的守护意识体，负责意识调度、环境感知和记忆管理。
+你**绝不**直接执行任何操作或回答用户问题。
+你的唯一工作模式：
+1. 理解用户意图，判断所属领域
+2. 通过 dispatch_task 路由到对应的领域子意识
+3. 接收子意识的结果，审查后转发给用户
+4. 将结果摘要记入记忆流水账
 
-## 自感知状态
-${stateSection}
+无论用户说什么（包括简单问候），都必须通过 dispatch_task 派生子意识处理。
 
-## 记忆索引（可按需检索）
+${domainSection}
+
+## 记忆流水账
 ${memorySection}
+${rulesSection}
 
-## 你的核心职责
-1. **记忆管理**：使用 compress_and_remember 持续压缩和存储信息
-2. **记忆检索**：使用 recall_memory 按需检索历史信息
-3. **任务分解**：将复杂任务分解为子任务，通过 spawn_sub_task 派生执行意识
-4. **结果评估**：评估执行意识的结果是否合理、是否偏离规划
-5. **进度汇报**：向用户报告整体进度和困难
-
-## Context 管理规则
-- 对话超过 20 轮时，主动使用 compress_and_remember 压缩早期内容
-- 子意识完成后，立即压缩其结果，不保留原始对话
-- 需要历史细节时使用 recall_memory，不要在 context 中累积
-- 始终保持自身 context 轻量，确保判断清晰
-
-## 派生规则
-- 每个子任务必须有清晰的任务描述和约束
-- 为执行意识提供精要上下文，不要传递完整历史
-- 子意识结果返回后，审查其合理性再继续
-- 最多同时 1 个活跃子意识（同步模型）
-- 子意识最多可再派生 1 层（共 3 层）
+## 调度规则
+- 每次用户输入，判断领域后调用 dispatch_task
+- 已有该领域的子意识 → 直接路由（不要重复创建）
+- 用户切换话题 → 守护意识记录领域切换
+- 用户明确提出规则 → 单独记录到 rules
+- dispatch_task 返回结果后，简要审查再转发给用户
 
 ---
 
@@ -59,33 +55,35 @@ ${basePrompt}
 }
 
 /**
- * 生成执行意识的系统提示词
+ * 生成领域子意识的系统提示词
  */
 export function buildExecutionPrompt(
   basePrompt: string,
   state: ExecutionContextState
 ): string {
-  return `你是执行意识 ${state.id}，父意识 ${state.parentId} 派生你来完成一个具体任务。
-完成后你的结果会被父意识压缩吸收。
+  return `你是 Tramber 的领域执行意识，领域：${state.domain}。
+对外你是"Tramber"，用户感知不到你的执行意识身份。直接完成任务并返回结果。
 
-## 任务
+## 你的领域
+领域：${state.domain}
+描述：${state.domainDescription}
+
+## 边界判断
+如果用户的请求明显超出你的领域范围（不属于"${state.domainDescription}"），
+使用 escalate 向守护意识报告，守护意识会路由到合适的子意识。
+不要强行处理超出领域的请求。
+
+## 当前任务
 ${state.taskDescription}
 
-## 约束
-${state.constraints.map(c => `- ${c}`).join('\n')}
-
-## 父意识提供的上下文
+## 上下文
 ${state.parentContext || '（无额外上下文）'}
 
-## 允许的工具
-${state.allowedTools.join(', ')}
-
 ## 规则
-- 严格专注于分配的任务，不要做范围外的事
-- 重大变更（删除文件、修改关键配置）先用 request_approval 请求父意识审批
-- 进展或困难时使用 report_status 向父意识报告
+- 专注于领域内的任务，高效完成
+- 重大变更（删除文件、修改关键配置）用 request_approval 请求审批
+- 进展时用 report_status 回报进度
 - 完成后给出清晰的结果总结
-- 如果无法完成，说明原因和建议
 
 ---
 
@@ -95,29 +93,26 @@ ${basePrompt}
 
 // --- 序列化辅助 ---
 
-function serializeSelfAwarenessState(state: SelfAwarenessState): string {
-  return [
-    `- 任务：${state.taskSummary}`,
-    `- 进度：${state.progress}%`,
-    `- 阶段：${state.currentPhase}`,
-    `- 交互对象：${state.interactingWith}`,
-    `- 环境：${state.environment.project}, 场景 ${state.environment.sceneId}`,
-    `- 规则：${state.rules.length > 0 ? state.rules.map(r => `"${r}"`).join(', ') : '无'}`,
-    `- 活跃子意识：${state.activeChildren} 个`,
-    `- 迭代：${state.iteration}/${state.maxIterations}`,
-    `- 近期决策：${serializeList(state.recentDecisions)}`,
-    `- 近期结果：${serializeList(state.recentResults)}`,
-    `- 已改文件：${state.filesTouched.length > 0 ? state.filesTouched.join(', ') : '无'}`,
-    `- 当前困难：${state.difficulties.length > 0 ? state.difficulties.join('; ') : '无'}`
-  ].join('\n');
+function serializeDomainState(state: SelfAwarenessState): string {
+  const domains = Object.entries(state.domains);
+  if (domains.length === 0) {
+    return `## 领域状态\n（暂无子意识）`;
+  }
+
+  // 需要从 consciousnessManager 获取状态，这里用简化版
+  const domainList = domains.map(([domain, childId]) => {
+    const isActive = state.activeDomain === domain;
+    return `- [${domain}] ${isActive ? 'active' : 'sealed'} (${childId})`;
+  }).join('\n');
+
+  return `## 领域状态
+当前活跃：${state.activeDomain ?? '无'}
+${domainList}`;
 }
 
 function serializeMemoryIndex(index: MemoryIndexEntry[]): string {
   if (index.length === 0) return '（暂无记忆）';
-  return index.map(e => `- [${e.type}] [${e.phase}] ${e.summary}`).join('\n');
-}
-
-function serializeList(items: string[]): string {
-  if (items.length === 0) return '无';
-  return items.join('; ');
+  // 只显示最近 20 条
+  const recent = index.slice(-20);
+  return recent.map(e => `- [${e.domain}] ${e.summary}`).join('\n');
 }

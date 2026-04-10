@@ -18,6 +18,7 @@ export class RequestApprovalTool implements Tool {
   name = 'request_approval';
   description = '向父意识请求审批。执行重大变更前使用。';
   category = 'execution' as const;
+  permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {

@@ -11,6 +11,7 @@ export class RecallMemoryTool implements Tool {
   name = 'recall_memory';
   description = '从记忆系统中检索历史信息。当需要回忆之前的决策、执行结果或对话概况时使用。';
   category = 'search' as const;
+  permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {

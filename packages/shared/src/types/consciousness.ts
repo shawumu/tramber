@@ -1,10 +1,9 @@
 // packages/shared/src/types/consciousness.ts
 /**
- * 意识体类型定义 — Context 分层管理
+ * 意识体类型定义 — 领域感知与 Context 分层管理
  *
- * 意识体 = context 管理策略
- * - 自我感知意识：始终轻量，维护压缩摘要和记忆索引
- * - 执行意识：短命聚焦，接收父意识特调的小而精 prompt
+ * 守护意识（Guardian）：只做调度，不直接执行
+ * 领域子意识（Domain Child）：按领域持久，可封存/激活
  */
 
 // === 基础类型 ===
@@ -17,68 +16,57 @@ export type ConsciousnessStatus =
   | 'spawning'          // 创建中
   | 'thinking'          // LLM 推理中
   | 'executing'         // 执行工具调用
+  | 'active'            // 领域子意识活跃中（跨多轮对话）
+  | 'sealed'            // 封存（领域暂不活跃，可重新激活）
   | 'waiting_approval'  // 等待审批
-  | 'compressing'       // 压缩子意识结果
+  | 'compressing'       // 压缩结果
   | 'completed'         // 已完成
   | 'failed'            // 执行失败
   | 'cancelled';        // 被父意识取消
 
-// === 自我感知状态 ===
+// === 守护意识状态 ===
 
 /**
- * 自我感知意识的状态 — 每轮注入 system prompt
- * 始终保持轻量，是压缩后的精华
+ * 守护意识的状态 — 调度器，不直接执行
  */
 export interface SelfAwarenessState {
   id: string;
   level: 'self_awareness';
   status: ConsciousnessStatus;
 
-  // --- 始终在 context 中的信息 ---
+  /** 当前活跃领域 */
+  activeDomain: string | null;
+  /** 领域 → 子意识 ID 映射（包含 active + sealed） */
+  domains: Record<string, string>;
 
-  /** 当前任务概况（一句话） */
-  taskSummary: string;
-  /** 进度 0-100 */
-  progress: number;
-  /** 当前所处阶段描述 */
-  currentPhase: string;
-  /** 与谁交互（用户/其他 agent） */
-  interactingWith: string;
+  /** 用户明确提出的规则（单独管理、持久传递） */
+  rules: string[];
+
   /** 当前环境概况 */
   environment: {
     project: string;
     branch?: string;
     sceneId: string;
   };
-  /** 不可违反的规则和约束 */
-  rules: string[];
-  /** 活跃的子意识数量 */
-  activeChildren: number;
+
   /** 迭代计数 */
   iteration: number;
   maxIterations: number;
 
-  // --- 通过 recall_memory 按需检索 ---
-
-  /** 记忆索引（只有标题和 ID，不包含内容） */
+  /** Online Memory 索引（注入 prompt 的子集） */
   memoryIndex: MemoryIndexEntry[];
 
-  // --- 内部维护（不注入 prompt） ---
-
-  /** 已做关键决策（最近 5 条注入 prompt，完整列表存记忆） */
+  // --- 内部维护 ---
   recentDecisions: string[];
-  /** 最近子意识结果摘要（最近 2 条） */
   recentResults: string[];
-  /** 当前遇到的困难 */
   difficulties: string[];
-  /** 已修改文件列表（注入 prompt） */
   filesTouched: string[];
 }
 
-// === 执行意识状态 ===
+// === 领域子意识状态 ===
 
 /**
- * 执行意识的状态 — 由父意识准备，保持极简
+ * 领域子意识的状态 — 按领域持久存在
  */
 export interface ExecutionContextState {
   id: string;
@@ -87,7 +75,14 @@ export interface ExecutionContextState {
   /** 父意识 ID */
   parentId: string;
 
-  /** 父意识特调的任务描述（精确、聚焦） */
+  /** 所属领域 */
+  domain: string;
+  /** 领域描述（帮助 LLM 判断边界） */
+  domainDescription: string;
+  /** 是否为新创建的子意识（首次需要介绍） */
+  isNew: boolean;
+
+  /** 当前任务描述 */
   taskDescription: string;
   /** 执行约束 */
   constraints: string[];
@@ -99,23 +94,33 @@ export interface ExecutionContextState {
   maxIterations: number;
 }
 
-// === 记忆系统 ===
+// === 记忆系统：双层架构 ===
 
 /** 记忆类型 */
-export type MemoryType = 'decision' | 'result_summary' | 'difficulty' | 'file_change' | 'conversation_summary';
+export type MemoryType =
+  | 'user_turn'         // 用户对话概括（守护意识写入）
+  | 'progress_report'   // 子意识阶段性回报
+  | 'result_summary'    // 子意识最终结果
+  | 'escalation'        // 子意识判断超出领域
+  | 'rule_extracted'    // 用户提出的规则
+  | 'domain_switch';    // 领域切换记录
 
 /**
- * 记忆条目 — 存储在外部，按需检索
+ * Offline Memory 条目 — 磁盘全量流水账
  */
 export interface MemoryEntry {
   id: string;
-  /** 所属任务阶段 */
-  phase: string;
+  /** 所属会话 ID */
+  taskId?: string;
+  /** 来源：子意识 ID 或 'guardian' */
+  sourceId: string;
+  /** 所属领域 */
+  domain: string;
   /** 记忆类型 */
   type: MemoryType;
-  /** 一句话摘要（用于索引展示） */
+  /** 摘要（≤ 300 字符） */
   summary: string;
-  /** 详细内容 */
+  /** 详细内容（过长会被二次概括） */
   content: string;
   /** 相关文件 */
   relatedFiles: string[];
@@ -124,11 +129,26 @@ export interface MemoryEntry {
 }
 
 /**
- * 记忆索引条目 — 注入自我感知意识的 prompt
+ * Online Memory — 守护意识实时持有的子集
+ */
+export interface OnlineMemory {
+  /** 所属任务 ID */
+  taskId?: string;
+  /** 早期概括（Offline 前部分的压缩摘要） */
+  earlySummary: string;
+  /** 近期原始条目（保持原样） */
+  recentEntries: MemoryEntry[];
+  /** Offline 总条目数 */
+  totalCount: number;
+}
+
+/**
+ * 记忆索引条目 — 注入守护意识 prompt
  */
 export interface MemoryIndexEntry {
   id: string;
-  phase: string;
+  taskId?: string;
+  domain: string;
   type: MemoryType;
   summary: string;
 }
@@ -137,20 +157,16 @@ export interface MemoryIndexEntry {
  * 记忆检索请求
  */
 export interface MemoryQuery {
-  /** 按阶段过滤 */
-  phase?: string;
-  /** 按类型过滤 */
+  domain?: string;
   type?: MemoryType;
-  /** 关键词搜索 */
   keyword?: string;
-  /** 最多返回条数 */
   limit?: number;
 }
 
 // === Context 持久化 ===
 
 /**
- * Context 快照 — 意识体执行完成后的完整消息快照
+ * Context 快照 — 意识体的完整消息快照
  */
 export interface ConsciousnessContextSnapshot {
   /** 意识体 ID */
@@ -161,7 +177,9 @@ export interface ConsciousnessContextSnapshot {
   level: ConsciousnessLevel;
   /** 任务描述 */
   taskDescription: string;
-  /** 完整消息历史（含 system prompt、工具调用和结果） */
+  /** 所属领域（子意识才有） */
+  domain?: string;
+  /** 完整消息历史 */
   messages: Array<{ role: string; content: string }>;
   /** 迭代次数 */
   iterations: number;
@@ -179,11 +197,8 @@ export interface ConsciousnessContextSnapshot {
  * Context 存储配置
  */
 export interface ContextStorageOptions {
-  /** 根目录（默认 .tramber/contexts/） */
   rootDir: string;
-  /** 每个任务最多保留多少个子意识 context（默认 20） */
   maxSnapshotsPerTask: number;
-  /** 是否启用（默认 true） */
   enabled: boolean;
 }
 
@@ -194,13 +209,9 @@ export interface ContextStorageOptions {
  */
 export interface ConsciousnessNode {
   id: string;
-  /** 所属智能体 ID */
   agentId: string;
-  /** 状态 */
   state: SelfAwarenessState | ExecutionContextState;
-  /** 子意识列表 */
   children: Map<string, ConsciousnessNode>;
-  /** 是否活跃 */
   active: boolean;
 }
 
@@ -210,15 +221,10 @@ export interface ConsciousnessNode {
 export interface ConsciousnessResult {
   consciousnessId: string;
   success: boolean;
-  /** 子意识的最终输出 */
   finalAnswer: string;
-  /** 子意识修改的文件 */
   filesTouched: string[];
-  /** token 消耗 */
   tokenUsage: { input: number; output: number; total: number };
-  /** 使用的迭代数 */
   iterations: number;
-  /** 父意识压缩后的摘要（原始结果已丢弃） */
   compressedSummary?: string;
   error?: string;
 }

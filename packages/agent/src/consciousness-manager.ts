@@ -1,9 +1,9 @@
 // packages/agent/src/consciousness-manager.ts
 /**
- * ConsciousnessManager - 意识体树管理器
+ * ConsciousnessManager - 意识体管理器
  *
- * 管理意识体的创建、状态更新、记忆存储和结果压缩。
- * 不直接执行 LLM 调用（由 AgentLoop 负责），只管理元数据和生命周期。
+ * 守护意识（Guardian）：调度、环境感知、记忆管理
+ * 领域子意识（Domain Child）：按领域持久，可封存/激活
  */
 
 import type {
@@ -25,31 +25,20 @@ import type { ContextStorage } from './context-storage.js';
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
 export interface ConsciousnessManagerOptions {
-  /** 当前 agent ID */
   agentId: string;
-  /** 记忆存储 */
   memoryStore: MemoryStore;
-  /** Context 存储 */
   contextStorage: ContextStorage;
-  /** 根意识最大迭代 */
   maxIterations?: number;
 }
 
-/**
- * 意识体树管理器
- */
 export class ConsciousnessManager {
   private agentId: string;
   private memoryStore: MemoryStore;
   private contextStorage: ContextStorage;
   private maxIterations: number;
-  /** 意识体树根节点 */
   private root: ConsciousnessNode | null = null;
-  /** 当前活跃的意识体 */
   private activeNode: ConsciousnessNode | null = null;
-  /** 当前任务 ID */
   private currentTaskId: string | null = null;
-  /** 审批请求映射 */
   private pendingApprovals: Map<string, ApprovalRequest> = new Map();
 
   constructor(options: ConsciousnessManagerOptions) {
@@ -59,11 +48,9 @@ export class ConsciousnessManager {
     this.maxIterations = options.maxIterations ?? 30;
   }
 
-  // === 根意识管理 ===
+  // === 守护意识 ===
 
-  /**
-   * 创建根意识（自我感知意识）
-   */
+  /** 创建守护意识 */
   createRoot(taskId: string, taskDescription: string, sceneId: string): SelfAwarenessState {
     this.currentTaskId = taskId;
 
@@ -71,16 +58,13 @@ export class ConsciousnessManager {
       id: 'root',
       level: 'self_awareness',
       status: 'thinking',
-      taskSummary: taskDescription,
-      progress: 0,
-      currentPhase: '初始化',
-      interactingWith: 'user',
+      activeDomain: null,
+      domains: {},
+      rules: [],
       environment: {
         project: process.cwd(),
         sceneId
       },
-      rules: [],
-      activeChildren: 0,
       iteration: 0,
       maxIterations: this.maxIterations,
       memoryIndex: [],
@@ -100,25 +84,31 @@ export class ConsciousnessManager {
 
     this.activeNode = this.root;
 
-    debug(NS, LogLevel.BASIC, 'Root consciousness created', { taskId, sceneId });
+    debug(NS, LogLevel.BASIC, 'Guardian consciousness created', { taskId, sceneId });
     return state;
   }
 
-  /**
-   * 获取根意识状态
-   */
   getRoot(): SelfAwarenessState | null {
     if (!this.root) return null;
     return this.root.state as SelfAwarenessState;
   }
 
-  // === 子意识（执行意识）管理 ===
+  // === 领域子意识管理 ===
 
-  /**
-   * 创建执行意识
-   */
-  spawnChild(
-    parentId: string,
+  /** 查找领域对应的子意识节点 */
+  findChildByDomain(domain: string): ConsciousnessNode | null {
+    if (!this.root) return null;
+    for (const child of this.root.children.values()) {
+      const state = child.state as ExecutionContextState;
+      if (state.domain === domain) return child;
+    }
+    return null;
+  }
+
+  /** 创建领域子意识 */
+  createDomainChild(
+    domain: string,
+    domainDescription: string,
     taskDescription: string,
     options: {
       constraints?: string[];
@@ -132,7 +122,10 @@ export class ConsciousnessManager {
       id,
       level: 'execution',
       status: 'spawning',
-      parentId,
+      parentId: 'root',
+      domain,
+      domainDescription,
+      isNew: true,
       taskDescription,
       constraints: options.constraints ?? [],
       allowedTools: options.allowedTools ?? [],
@@ -148,91 +141,115 @@ export class ConsciousnessManager {
       active: true
     };
 
-    // 挂载到父节点
-    const parent = this.findNode(parentId);
-    if (parent) {
-      parent.children.set(id, node);
-      // 更新父意识的活跃子意识计数
-      if (parent.state.level === 'self_awareness') {
-        (parent.state as SelfAwarenessState).activeChildren = parent.children.size;
-      }
-    }
+    this.root!.children.set(id, node);
+
+    // 更新守护意识的领域映射
+    const rootState = this.root!.state as SelfAwarenessState;
+    rootState.domains[domain] = id;
+    rootState.activeDomain = domain;
 
     this.activeNode = node;
 
-    debug(NS, LogLevel.BASIC, 'Execution consciousness spawned', {
-      id,
-      parentId,
-      task: taskDescription.slice(0, 80)
-    });
-
+    debug(NS, LogLevel.BASIC, 'Domain child created', { id, domain, task: taskDescription.slice(0, 80) });
     return state;
   }
 
-  /**
-   * 更新意识体状态
-   */
+  /** 激活已封存的领域子意识 */
+  reactivateChild(domain: string): ExecutionContextState | null {
+    const node = this.findChildByDomain(domain);
+    if (!node) return null;
+
+    node.active = true;
+    const state = node.state as ExecutionContextState;
+    state.status = 'active';
+    state.isNew = false;
+
+    // 更新守护意识
+    const rootState = this.root!.state as SelfAwarenessState;
+    rootState.activeDomain = domain;
+
+    this.activeNode = node;
+
+    debug(NS, LogLevel.BASIC, 'Domain child reactivated', { id: state.id, domain });
+    return state;
+  }
+
+  /** 封存领域子意识 */
+  sealChild(domain: string): void {
+    const node = this.findChildByDomain(domain);
+    if (!node) return;
+
+    node.active = false;
+    const state = node.state as ExecutionContextState;
+    state.status = 'sealed';
+
+    // 更新守护意识
+    const rootState = this.root!.state as SelfAwarenessState;
+    if (rootState.activeDomain === domain) {
+      rootState.activeDomain = null;
+    }
+
+    debug(NS, LogLevel.BASIC, 'Domain child sealed', { id: state.id, domain });
+  }
+
+  /** 获取领域子意识（活跃或封存） */
+  getDomainChild(domain: string): ExecutionContextState | null {
+    const node = this.findChildByDomain(domain);
+    if (!node) return null;
+    return node.state as ExecutionContextState;
+  }
+
+  /** 获取所有领域信息 */
+  getDomainList(): Array<{ domain: string; childId: string; status: string }> {
+    if (!this.root) return [];
+    const result: Array<{ domain: string; childId: string; status: string }> = [];
+    for (const child of this.root.children.values()) {
+      const state = child.state as ExecutionContextState;
+      result.push({
+        domain: state.domain,
+        childId: state.id,
+        status: child.active ? 'active' : 'sealed'
+      });
+    }
+    return result;
+  }
+
+  // === 状态更新 ===
+
   updateStatus(consciousnessId: string, status: ConsciousnessStatus): void {
     const node = this.findNode(consciousnessId);
     if (!node) return;
-
     node.state.status = status;
-
-    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-      node.active = false;
-      // 更新父意识的活跃子意识计数
-      if (node.state.level === 'execution') {
-        const parent = this.findNode((node.state as ExecutionContextState).parentId);
-        if (parent && parent.state.level === 'self_awareness') {
-          let activeCount = 0;
-          for (const child of parent.children.values()) {
-            if (child.active) activeCount++;
-          }
-          (parent.state as SelfAwarenessState).activeChildren = activeCount;
-        }
-      }
-    }
   }
 
-  /**
-   * 更新自我感知意识的进度和阶段
-   */
   updateProgress(progress: number, phase: string): void {
     if (!this.root) return;
     const state = this.root.state as SelfAwarenessState;
-    state.progress = progress;
-    state.currentPhase = phase;
+    // progress 和 phase 可用于 domain tracking
   }
 
-  /**
-   * 添加近期决策
-   */
+  addRule(rule: string): void {
+    if (!this.root) return;
+    const state = this.root.state as SelfAwarenessState;
+    if (!state.rules.includes(rule)) {
+      state.rules.push(rule);
+    }
+  }
+
   addDecision(decision: string): void {
     if (!this.root) return;
     const state = this.root.state as SelfAwarenessState;
     state.recentDecisions.push(decision);
-    // 只保留最近 5 条在内存
-    if (state.recentDecisions.length > 5) {
-      state.recentDecisions.shift();
-    }
+    if (state.recentDecisions.length > 5) state.recentDecisions.shift();
   }
 
-  /**
-   * 添加近期结果
-   */
   addRecentResult(summary: string): void {
     if (!this.root) return;
     const state = this.root.state as SelfAwarenessState;
     state.recentResults.push(summary);
-    // 只保留最近 2 条
-    if (state.recentResults.length > 2) {
-      state.recentResults.shift();
-    }
+    if (state.recentResults.length > 3) state.recentResults.shift();
   }
 
-  /**
-   * 添加已修改文件
-   */
   addFileTouched(filePath: string): void {
     if (!this.root) return;
     const state = this.root.state as SelfAwarenessState;
@@ -241,22 +258,53 @@ export class ConsciousnessManager {
     }
   }
 
-  /**
-   * 添加困难记录
-   */
   addDifficulty(difficulty: string): void {
     if (!this.root) return;
     const state = this.root.state as SelfAwarenessState;
     state.difficulties.push(difficulty);
   }
 
+  // === 记忆写入 ===
+
+  /** 写入流水账条目 */
+  recordMemory(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): void {
+    this.memoryStore.store(entry);
+
+    // 更新守护意识的 memoryIndex
+    if (this.root && entry.taskId) {
+      const state = this.root.state as SelfAwarenessState;
+      state.memoryIndex = this.memoryStore.getIndex(entry.taskId);
+    }
+  }
+
+  /** 记录用户对话概括 */
+  recordUserTurn(domain: string, userSummary: string): void {
+    this.recordMemory({
+      taskId: this.currentTaskId ?? undefined,
+      sourceId: 'guardian',
+      domain,
+      type: 'user_turn',
+      summary: userSummary,
+      content: userSummary,
+      relatedFiles: []
+    });
+  }
+
+  /** 记录领域切换 */
+  recordDomainSwitch(fromDomain: string | null, toDomain: string, reason: string): void {
+    this.recordMemory({
+      taskId: this.currentTaskId ?? undefined,
+      sourceId: 'guardian',
+      domain: 'global',
+      type: 'domain_switch',
+      summary: `${fromDomain ?? '新'} → ${toDomain}: ${reason}`,
+      content: reason,
+      relatedFiles: []
+    });
+  }
+
   // === 结果压缩 ===
 
-  /**
-   * 压缩子意识执行结果并存入记忆
-   *
-   * 原始 context 保存到磁盘，内存中只保留压缩摘要。
-   */
   compressResult(
     consciousnessId: string,
     result: ConsciousnessResult,
@@ -265,15 +313,13 @@ export class ConsciousnessManager {
     // 1. 保存原始 context 到磁盘
     const node = this.findNode(consciousnessId);
     if (node && this.currentTaskId) {
+      const execState = node.state as ExecutionContextState;
       this.contextStorage.save(this.currentTaskId, {
         consciousnessId,
-        parentConsciousnessId: node.state.level === 'execution'
-          ? (node.state as ExecutionContextState).parentId
-          : undefined,
-        level: node.state.level,
-        taskDescription: node.state.level === 'execution'
-          ? (node.state as ExecutionContextState).taskDescription
-          : (node.state as SelfAwarenessState).taskSummary,
+        parentConsciousnessId: execState.parentId,
+        level: execState.level,
+        domain: execState.domain,
+        taskDescription: execState.taskDescription,
         messages,
         iterations: result.iterations,
         success: result.success,
@@ -283,57 +329,50 @@ export class ConsciousnessManager {
       });
     }
 
-    // 2. 使用 result.compressedSummary 或 finalAnswer 作为摘要
-    const summary = result.compressedSummary ?? result.finalAnswer;
+    // 2. 结果摘要（守护意识会通过 compress_and_remember 写简短摘要）
+    const rawSummary = result.compressedSummary ?? result.finalAnswer;
 
-    // 3. 存入记忆
-    const phase = node?.state.level === 'execution'
-      ? (node.state as ExecutionContextState).taskDescription.split(' ').slice(0, 3).join(' ')
-      : '主任务';
+    // 3. 存入记忆流水账
+    const domain = node?.state.level === 'execution'
+      ? (node.state as ExecutionContextState).domain
+      : 'global';
 
-    this.memoryStore.store({
-      phase,
+    this.recordMemory({
+      taskId: this.currentTaskId ?? undefined,
+      sourceId: consciousnessId,
+      domain,
       type: 'result_summary',
-      summary: summary.slice(0, 200),
-      content: summary,
+      summary: rawSummary.slice(0, 200), // 索引用简短摘要
+      content: rawSummary,
       relatedFiles: result.filesTouched
     });
 
-    // 4. 更新根意识的近期结果
-    this.addRecentResult(summary.slice(0, 100));
+    // 4. 更新守护意识
+    this.addRecentResult(rawSummary.slice(0, 100));
     for (const f of result.filesTouched) {
       this.addFileTouched(f);
     }
 
-    // 5. 更新索引
-    if (this.root) {
-      const state = this.root.state as SelfAwarenessState;
-      state.memoryIndex = this.memoryStore.getIndex();
-    }
-
-    debug(NS, LogLevel.BASIC, 'Result compressed and stored', {
+    debug(NS, LogLevel.BASIC, 'Result compressed', {
       consciousnessId,
       success: result.success,
-      filesTouched: result.filesTouched.length
+      domain
     });
 
-    return summary;
+    return rawSummary;
   }
 
   // === 记忆检索 ===
 
-  /**
-   * 检索记忆
-   */
   recallMemory(query: MemoryQuery): MemoryEntry[] {
-    return this.memoryStore.query(query);
+    return this.memoryStore.query({
+      ...query,
+      taskId: this.currentTaskId ?? undefined
+    });
   }
 
   // === 审批 ===
 
-  /**
-   * 创建审批请求
-   */
   createApprovalRequest(
     requesterId: string,
     action: string,
@@ -354,83 +393,27 @@ export class ConsciousnessManager {
     return request;
   }
 
-  /**
-   * 处理审批响应
-   */
   resolveApproval(requestId: string, response: ApprovalResponse): void {
     this.pendingApprovals.delete(requestId);
   }
 
-  /**
-   * 获取挂起的审批请求
-   */
   getPendingApproval(requestId: string): ApprovalRequest | undefined {
     return this.pendingApprovals.get(requestId);
   }
 
-  // === 迭代管理 ===
+  // === 迭代 ===
 
-  /**
-   * 增加迭代计数
-   */
   incrementIteration(consciousnessId?: string): number {
     const id = consciousnessId ?? 'root';
     const node = this.findNode(id);
-    if (!node) return 0;
-
-    if (node.state.level === 'self_awareness') {
-      const state = node.state as SelfAwarenessState;
-      state.iteration++;
-      return state.iteration;
-    }
-    return 0;
+    if (!node || node.state.level !== 'self_awareness') return 0;
+    const state = node.state as SelfAwarenessState;
+    state.iteration++;
+    return state.iteration;
   }
 
-  /**
-   * 检查是否达到最大迭代
-   */
-  isMaxIterations(consciousnessId?: string): boolean {
-    const id = consciousnessId ?? 'root';
-    const node = this.findNode(id);
-    if (!node) return true;
+  // === 结束 ===
 
-    if (node.state.level === 'self_awareness') {
-      const state = node.state as SelfAwarenessState;
-      return state.iteration >= state.maxIterations;
-    }
-    return false;
-  }
-
-  // === 树操作 ===
-
-  /**
-   * 获取当前活跃的意识体
-   */
-  getActive(): ConsciousnessNode | null {
-    return this.activeNode;
-  }
-
-  /**
-   * 设置活跃意识体（用于恢复上下文）
-   */
-  setActive(consciousnessId: string): void {
-    const node = this.findNode(consciousnessId);
-    if (node) {
-      this.activeNode = node;
-    }
-  }
-
-  /**
-   * 获取意识体树快照（调试用）
-   */
-  getTreeSnapshot(): object {
-    if (!this.root) return {};
-    return this.serializeNode(this.root);
-  }
-
-  /**
-   * 结束任务，保存根意识 context
-   */
   finalize(messages: Array<{ role: string; content: string }>, success: boolean, overrideTaskId?: string): void {
     if (!this.root) return;
 
@@ -440,21 +423,21 @@ export class ConsciousnessManager {
     const state = this.root.state as SelfAwarenessState;
     this.updateStatus('root', success ? 'completed' : 'failed');
 
+    // 保存守护意识 context
     this.contextStorage.saveRoot(taskId!, {
       consciousnessId: 'root',
-      taskDescription: state.taskSummary,
+      taskDescription: 'Guardian session',
       messages,
       iterations: state.iteration,
       success,
       terminatedReason: success ? 'completed' : 'error',
-      tokenUsage: undefined,
       createdAt: new Date().toISOString()
     });
 
-    debug(NS, LogLevel.BASIC, 'Task finalized', {
+    debug(NS, LogLevel.BASIC, 'Session finalized', {
       taskId: this.currentTaskId,
       success,
-      iterations: state.iteration,
+      domains: Object.keys(state.domains).length,
       memories: state.memoryIndex.length
     });
   }
@@ -473,27 +456,5 @@ export class ConsciousnessManager {
       if (found) return found;
     }
     return null;
-  }
-
-  private serializeNode(node: ConsciousnessNode): object {
-    const state = node.state;
-    return {
-      id: node.id,
-      active: node.active,
-      status: state.status,
-      level: state.level,
-      ...(state.level === 'self_awareness'
-        ? {
-            taskSummary: (state as SelfAwarenessState).taskSummary,
-            progress: (state as SelfAwarenessState).progress,
-            currentPhase: (state as SelfAwarenessState).currentPhase,
-            iteration: (state as SelfAwarenessState).iteration
-          }
-        : {
-            taskDescription: (state as ExecutionContextState).taskDescription,
-            parentId: (state as ExecutionContextState).parentId
-          }),
-      children: [...node.children.values()].map(c => this.serializeNode(c))
-    };
   }
 }

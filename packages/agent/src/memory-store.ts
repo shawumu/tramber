@@ -1,59 +1,83 @@
 // packages/agent/src/memory-store.ts
 /**
- * MemoryStore - 意识体记忆存储与检索
+ * MemoryStore - 双层记忆存储
  *
- * 结构化存储，按阶段/类型分类，索引与内容分离。
- * 存储在 .tramber/memory/ 目录下，JSON 文件格式。
+ * Offline Memory：磁盘全量流水账（.tramber/memory/）
+ * Online Memory：守护意识实时持有的子集（LRU 策略）
+ *
+ * 策略：
+ * - 总量 ≤ ONLINE_THRESHOLD（默认 1000）：Online = 全量
+ * - 总量 > ONLINE_THRESHOLD：早期概括 + 最近 RECENT_KEEP 条原样保留
+ * - 每增 100 条，滚动重概括一次
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import type { MemoryEntry, MemoryIndexEntry, MemoryQuery, MemoryType } from '@tramber/shared';
+import type { MemoryEntry, MemoryIndexEntry, MemoryQuery, MemoryType, OnlineMemory } from '@tramber/shared';
 import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MEMORY;
 
 export interface MemoryStoreOptions {
-  /** 存储根目录（默认 .tramber/memory/） */
   rootDir: string;
+  /** Online Memory 阈值（默认 1000） */
+  onlineThreshold?: number;
+  /** Online Memory 保留近期条目数（默认 500） */
+  recentKeep?: number;
 }
 
-/**
- * 记忆存储
- *
- * 目录结构：
- * .tramber/memory/
- * ├── index.json          # 全局索引（所有条目的摘要）
- * ├── entries/            # 详细内容，每个条目一个 JSON 文件
- * │   ├── mem-xxxxx.json
- * │   └── mem-yyyyy.json
- */
+/** Offline Memory 索引中的条目（比 MemoryEntry 轻） */
+interface OfflineIndexEntry {
+  id: string;
+  taskId?: string;
+  domain: string;
+  type: MemoryType;
+  summary: string;
+}
+
 export class MemoryStore {
   private rootDir: string;
-  private entriesDir: string;
-  private indexPath: string;
-  /** 内存缓存索引 */
-  private indexCache: MemoryIndexEntry[] | null = null;
+  private onlineThreshold: number;
+  private recentKeep: number;
+
+  private indexCache: Map<string, OfflineIndexEntry[]> = new Map(); // taskId -> index
+  /** Online Memory 缓存 */
+  private onlineCache: OnlineMemory | null = null;
+  /** 上次概括时的 Offline 总量（用于判断是否需要重新概括） */
+  private lastSummarizedCount = 0;
 
   constructor(options: MemoryStoreOptions) {
     this.rootDir = options.rootDir;
-    this.entriesDir = join(options.rootDir, 'entries');
-    this.indexPath = join(options.rootDir, 'index.json');
-    this.ensureDirs();
+    this.onlineThreshold = options.onlineThreshold ?? 1000;
+    this.recentKeep = options.recentKeep ?? 500;
+    this.ensureRootDir();
   }
 
-  /**
-   * 存储一条记忆
-   */
+  // === 写入 ===
+
+  /** 写入一条 Offline Memory */
   store(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): MemoryEntry {
+    const taskId = entry.taskId;
+    if (!taskId) {
+      debugError(NS, 'Memory store requires taskId', { entry });
+      throw new Error('Memory store requires taskId');
+    }
+
     const fullEntry: MemoryEntry = {
       ...entry,
       id: generateId('mem'),
       createdAt: new Date().toISOString()
     };
 
+    // 按任务分目录存储
+    const taskDir = this.getTaskDir(taskId);
+    const entriesDir = join(taskDir, 'entries');
+    if (!existsSync(entriesDir)) {
+      mkdirSync(entriesDir, { recursive: true });
+    }
+
     // 写入条目文件
-    const entryPath = join(this.entriesDir, `${fullEntry.id}.json`);
+    const entryPath = join(entriesDir, `${fullEntry.id}.json`);
     try {
       writeFileSync(entryPath, JSON.stringify(fullEntry, null, 2), 'utf-8');
     } catch (err) {
@@ -61,139 +85,246 @@ export class MemoryStore {
       throw err;
     }
 
-    // 更新索引
-    const indexEntry: MemoryIndexEntry = {
+    // 更新该任务的索引
+    const indexEntry: OfflineIndexEntry = {
       id: fullEntry.id,
-      phase: fullEntry.phase,
+      taskId: fullEntry.taskId,
+      domain: fullEntry.domain,
       type: fullEntry.type,
       summary: fullEntry.summary
     };
-    const index = this.loadIndex();
+    const index = this.loadTaskIndex(taskId);
     index.push(indexEntry);
-    this.saveIndex(index);
+    this.saveTaskIndex(taskId, index);
 
     // 清除缓存
-    this.indexCache = null;
+    this.indexCache.delete(taskId);
+    this.onlineCache = null;
 
-    debug(NS, LogLevel.BASIC, 'Memory stored', { id: fullEntry.id, type: fullEntry.type, phase: fullEntry.phase });
+    debug(NS, LogLevel.BASIC, 'Memory stored', { id: fullEntry.id, type: fullEntry.type, domain: fullEntry.domain, taskId });
     return fullEntry;
   }
 
-  /**
-   * 检索记忆
-   */
-  query(query: MemoryQuery = {}): MemoryEntry[] {
-    const { phase, type, keyword, limit = 5 } = query;
-    const index = this.loadIndex();
+  // === Online Memory ===
 
-    // 先在索引中过滤
+  /** 获取 Online Memory（守护意识 Context 使用） */
+  getOnlineMemory(taskId?: string): OnlineMemory {
+    const effectiveTaskId = taskId;
+    if (!effectiveTaskId) {
+      // 没有 taskId 时返回空的 Online Memory
+      return { earlySummary: '', recentEntries: [], totalCount: 0 };
+    }
+
+    const cacheKey = effectiveTaskId;
+    if (this.onlineCache && this.onlineCache.taskId === cacheKey) return this.onlineCache;
+
+    const index = this.loadTaskIndex(effectiveTaskId);
+    const totalCount = index.length;
+
+    if (totalCount <= this.onlineThreshold) {
+      // 全量加载
+      const allEntries = index.map(e => this.loadEntry(e.taskId!, e.id)).filter((e): e is MemoryEntry => e !== null);
+      this.onlineCache = {
+        taskId: cacheKey,
+        earlySummary: '',
+        recentEntries: allEntries,
+        totalCount
+      };
+      return this.onlineCache;
+    }
+
+    // LRU 策略：早期概括 + 近期原样
+    const recentIndex = index.slice(-this.recentKeep);
+    const recentEntries = recentIndex.map(e => this.loadEntry(e.taskId!, e.id)).filter((e): e is MemoryEntry => e !== null);
+
+    this.onlineCache = {
+      taskId: cacheKey,
+      earlySummary: this.getOrGenerateEarlySummary(index, effectiveTaskId),
+      recentEntries,
+      totalCount
+    };
+    return this.onlineCache;
+  }
+
+  /** 获取索引（用于 prompt 注入） */
+  getIndex(taskId?: string): MemoryIndexEntry[] {
+    if (!taskId) return [];
+    return this.loadTaskIndex(taskId).map(e => ({
+      id: e.id,
+      taskId: e.taskId,
+      domain: e.domain,
+      type: e.type,
+      summary: e.summary
+    }));
+  }
+
+  // === 检索 ===
+
+  query(query: MemoryQuery & { taskId?: string } = {}): MemoryEntry[] {
+    const { taskId, domain, type, keyword, limit = 5 } = query;
+    if (!taskId) return [];
+
+    const index = this.loadTaskIndex(taskId);
+
     let matchedIds = index
       .filter(entry => {
-        if (phase && entry.phase !== phase) return false;
+        if (domain && entry.domain !== domain) return false;
         if (type && entry.type !== type) return false;
         if (keyword && !entry.summary.toLowerCase().includes(keyword.toLowerCase())) return false;
         return true;
       })
-      .map(entry => entry.id);
+      .map(entry => ({ id: entry.id, taskId: entry.taskId }));
 
-    // 限制数量
-    matchedIds = matchedIds.slice(0, limit);
+    matchedIds = matchedIds.slice(-limit); // 最近优先
 
-    // 加载详细内容
-    return matchedIds.map(id => this.loadEntry(id)).filter((e): e is MemoryEntry => e !== null);
+    return matchedIds.map(item => this.loadEntry(item.taskId!, item.id)).filter((e): e is MemoryEntry => e !== null);
   }
 
-  /**
-   * 获取索引（用于注入自我感知意识的 prompt）
-   */
-  getIndex(): MemoryIndexEntry[] {
-    return this.loadIndex();
+  get(taskId: string, id: string): MemoryEntry | null {
+    return this.loadEntry(taskId, id);
   }
 
-  /**
-   * 获取某条记忆
-   */
-  get(id: string): MemoryEntry | null {
-    return this.loadEntry(id);
+  clear(taskId?: string): void {
+    if (taskId) {
+      // 清除指定任务的 memory
+      const taskDir = this.getTaskDir(taskId);
+      try {
+        if (existsSync(taskDir)) {
+          const entriesDir = join(taskDir, 'entries');
+          if (existsSync(entriesDir)) {
+            const files = readdirSync(entriesDir);
+            for (const f of files) {
+              if (f.endsWith('.json')) {
+                unlinkSync(join(entriesDir, f));
+              }
+            }
+          }
+          this.saveTaskIndex(taskId, []);
+        }
+      } catch (err) {
+        debugError(NS, 'Failed to clear task memory', err);
+      }
+    } else {
+      // 清除所有（兼容旧行为）
+      this.clearAll();
+    }
+    this.indexCache.clear();
+    this.onlineCache = null;
   }
 
-  /**
-   * 按阶段获取所有记忆索引
-   */
-  getByPhase(phase: string): MemoryIndexEntry[] {
-    return this.loadIndex().filter(e => e.phase === phase);
-  }
-
-  /**
-   * 获取所有阶段标签
-   */
-  getPhases(): string[] {
-    const phases = new Set(this.loadIndex().map(e => e.phase));
-    return [...phases];
-  }
-
-  /**
-   * 清除所有记忆（测试用）
-   */
-  clear(): void {
+  private clearAll(): void {
     try {
-      const files = readdirSync(this.entriesDir);
-      for (const f of files) {
-        if (f.endsWith('.json')) {
-          unlinkSync(join(this.entriesDir, f));
+      if (!existsSync(this.rootDir)) return;
+      const taskDirs = readdirSync(this.rootDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name.startsWith('conv-') || d.name.startsWith('task-'));
+      for (const d of taskDirs) {
+        const taskDir = join(this.rootDir, d.name);
+        const entriesDir = join(taskDir, 'entries');
+        if (existsSync(entriesDir)) {
+          const files = readdirSync(entriesDir);
+          for (const f of files) {
+            if (f.endsWith('.json')) {
+              unlinkSync(join(entriesDir, f));
+            }
+          }
+        }
+        const indexPath = join(taskDir, 'index.json');
+        if (existsSync(indexPath)) {
+          unlinkSync(indexPath);
         }
       }
-      this.saveIndex([]);
-      this.indexCache = null;
     } catch (err) {
-      debugError(NS, 'Failed to clear memory store', err);
+      debugError(NS, 'Failed to clear all memory', err);
     }
   }
 
-  // --- 内部方法 ---
+  // === 内部方法 ===
 
-  private ensureDirs(): void {
+  private getTaskDir(taskId: string): string {
+    return join(this.rootDir, taskId);
+  }
+
+  private getOrGenerateEarlySummary(index: OfflineIndexEntry[], taskId: string): string {
+    const earlyCount = index.length - this.recentKeep;
+    if (earlyCount <= 0) return '';
+
+    // 检查是否需要重新概括（每 100 条重概括一次）
+    if (this.lastSummarizedCount > 0 && Math.abs(earlyCount - this.lastSummarizedCount) < 100) {
+      // 尝试读取已保存的概括
+      const summaryPath = join(this.getTaskDir(taskId), 'early-summary.txt');
+      if (existsSync(summaryPath)) {
+        return readFileSync(summaryPath, 'utf-8');
+      }
+    }
+
+    // 简单概括：按领域分组统计
+    const earlyEntries = index.slice(0, earlyCount);
+    const domainGroups: Record<string, number> = {};
+
+    for (const e of earlyEntries) {
+      domainGroups[e.domain] = (domainGroups[e.domain] || 0) + 1;
+    }
+
+    // 取每个领域的最后几条 summary 作为代表
+    const domainSummaries: string[] = [];
+    for (const [domain, count] of Object.entries(domainGroups)) {
+      const domainEntries = earlyEntries.filter(e => e.domain === domain).slice(-3);
+      const samples = domainEntries.map(e => e.summary).join('；');
+      domainSummaries.push(`[${domain}] 共${count}条交互，最近：${samples}`);
+    }
+
+    const summary = `早期交互概括（共${earlyCount}条）：\n${domainSummaries.join('\n')}`;
+    this.lastSummarizedCount = earlyCount;
+
+    // 保存概括到磁盘
+    try {
+      writeFileSync(join(this.getTaskDir(taskId), 'early-summary.txt'), summary, 'utf-8');
+    } catch { /* ignore */ }
+
+    return summary;
+  }
+
+  private ensureRootDir(): void {
     if (!existsSync(this.rootDir)) {
       mkdirSync(this.rootDir, { recursive: true });
     }
-    if (!existsSync(this.entriesDir)) {
-      mkdirSync(this.entriesDir, { recursive: true });
-    }
-    if (!existsSync(this.indexPath)) {
-      this.saveIndex([]);
-    }
   }
 
-  private loadIndex(): MemoryIndexEntry[] {
-    if (this.indexCache) return this.indexCache;
-
+  private loadTaskIndex(taskId: string): OfflineIndexEntry[] {
+    if (this.indexCache.has(taskId)) return this.indexCache.get(taskId)!;
     try {
-      const raw = readFileSync(this.indexPath, 'utf-8');
-      this.indexCache = JSON.parse(raw);
-      return this.indexCache!;
-    } catch (err) {
-      debugError(NS, 'Failed to load memory index', err);
+      const indexPath = join(this.getTaskDir(taskId), 'index.json');
+      if (!existsSync(indexPath)) return [];
+      const raw = readFileSync(indexPath, 'utf-8');
+      const index = JSON.parse(raw);
+      this.indexCache.set(taskId, index);
+      return index;
+    } catch {
       return [];
     }
   }
 
-  private saveIndex(index: MemoryIndexEntry[]): void {
+  private saveTaskIndex(taskId: string, index: OfflineIndexEntry[]): void {
     try {
-      writeFileSync(this.indexPath, JSON.stringify(index, null, 2), 'utf-8');
-      this.indexCache = index;
+      const taskDir = this.getTaskDir(taskId);
+      if (!existsSync(taskDir)) {
+        mkdirSync(taskDir, { recursive: true });
+      }
+      const indexPath = join(taskDir, 'index.json');
+      writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf-8');
+      this.indexCache.set(taskId, index);
     } catch (err) {
       debugError(NS, 'Failed to save memory index', err);
     }
   }
 
-  private loadEntry(id: string): MemoryEntry | null {
+  private loadEntry(taskId: string, id: string): MemoryEntry | null {
     try {
-      const entryPath = join(this.entriesDir, `${id}.json`);
+      const entryPath = join(this.getTaskDir(taskId), 'entries', `${id}.json`);
       if (!existsSync(entryPath)) return null;
       const raw = readFileSync(entryPath, 'utf-8');
       return JSON.parse(raw);
-    } catch (err) {
-      debugError(NS, `Failed to load memory entry: ${id}`, err);
+    } catch {
       return null;
     }
   }
