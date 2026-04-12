@@ -337,7 +337,8 @@ export class TramberEngine {
       let rootState: SelfAwarenessState | undefined;
       if (this.consciousnessManager) {
         const cm = this.consciousnessManager;
-        rootState = cm.createRoot(
+        // 首轮创建 root，后续轮复用已有 root（保留领域子意识树）
+        rootState = cm.getRoot() ?? cm.createRoot(
           task.id,
           description,
           options.sceneId ?? 'coding'
@@ -382,7 +383,13 @@ export class TramberEngine {
             });
           },
           currentConsciousnessId: 'root',
-          onPermissionRequired: options.onPermissionRequired
+          onPermissionRequired: options.onPermissionRequired,
+          onChildStep: (step) => {
+            // 子意识输出直接发给用户
+            if (step.content) {
+              onProgress({ type: 'text_delta', content: step.content });
+            }
+          }
         };
 
         // 注册虚拟工具到主 registry
@@ -464,17 +471,12 @@ export class TramberEngine {
       // 执行任务
       onProgress({ type: 'step', content: 'Executing task...' });
 
-      // 意识体模式：记录 user_turn 到 memory 流水账
-      if (this.consciousnessManager) {
-        const userSummary = description.length > 100 ? description.slice(0, 100) + '...' : description;
-        this.consciousnessManager.recordUserTurn('user', userSummary);
-      }
-
       const result = await agentLoop.execute(task, conversation);
 
-      // 首轮执行后锁定 conversation ID，后续轮复用同一 task ID
-      if (result.conversation?.id) {
-        this.currentTaskId = result.conversation.id;
+      // 锁定 taskId：首轮用预生成的 conv-xxx，不再被 result.conversation.id 覆盖
+      // 这样多轮对话始终使用同一个目录
+      if (!this.currentTaskId) {
+        this.currentTaskId = task.id;
       }
 
       debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Task execution completed', {
@@ -483,17 +485,69 @@ export class TramberEngine {
         terminatedReason: result.terminatedReason
       });
 
-      // 意识体模式：finalize 并清理虚拟工具
+      // 意识体模式：清理 conversation 并 finalize
       if (this.consciousnessManager) {
-        // 用 engine 的 currentTaskId（可能已被首轮锁定为 conversation.id）
-        // 覆盖 cm 内部的 taskId，确保多轮对话存入同一目录
+        const cm = this.consciousnessManager;
+
+        // 1. 重建系统提示词（反映当前领域状态）
+        result.conversation.systemPrompt = cm.buildGuardianPrompt();
+
+        // 2. 清理消息：只保留每个 turn 的最终分析总结
+        // 通过 msg.toolNames 标识工具结果：有 toolNames → 工具返回（assistant 是中间消息）
+        // 无 toolNames → 原始用户输入（之前的 assistant 是最终总结）
+        const cleanedMessages: typeof result.conversation.messages = [];
+        let pendingAssistant: typeof result.conversation.messages[0] | null = null;
+
+        for (const msg of result.conversation.messages) {
+          if (msg.role === 'assistant') {
+            pendingAssistant = msg;
+          } else if (msg.role === 'user') {
+            if (msg.toolNames && msg.toolNames.length > 0) {
+              // 工具结果 → 之前的 assistant 是中间消息，丢弃
+              pendingAssistant = null;
+            } else {
+              // 原始用户输入 → 之前的 assistant 是上一轮的最终总结
+              if (pendingAssistant) {
+                cleanedMessages.push(pendingAssistant);
+                pendingAssistant = null;
+              }
+            }
+          }
+        }
+        // 最后一个 assistant（本轮最终总结）
+        if (pendingAssistant) {
+          cleanedMessages.push(pendingAssistant);
+        }
+
+        result.conversation.messages = cleanedMessages;
+
+        // 2.5 将本轮新增的分析总结写入 memory（只写最后一条，避免重复）
+        const rootState = cm.getRoot();
+        const activeDomain = rootState?.activeDomain ?? 'global';
+        const newSummary = cleanedMessages[cleanedMessages.length - 1];
+        if (newSummary && newSummary.role === 'assistant') {
+          cm.recordMemory({
+            sourceId: 'guardian',
+            domain: activeDomain,
+            type: 'result_summary',
+            summary: newSummary.content,
+            content: newSummary.content,
+            relatedFiles: []
+          });
+        }
+
+        debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Guardian conversation cleaned', {
+          keptMessages: result.conversation.messages.length,
+          domainCount: Object.keys(cm.getRoot()?.domains ?? {}).length
+        });
+
+        // 3. 用 engine 的 currentTaskId 确保 context 存入同一目录
         const finalTaskId = this.currentTaskId ?? task.id;
-        // 构建完整消息列表：system prompt + 所有对话消息
         const fullMessages: Array<{ role: string; content: string }> = [
           { role: 'system', content: result.conversation.systemPrompt },
           ...result.conversation.messages.map(m => ({ role: m.role, content: m.content }))
         ];
-        this.consciousnessManager.finalize(fullMessages, result.success, finalTaskId);
+        cm.finalize(fullMessages, result.success, finalTaskId);
         unregisterVirtualTools(this.toolRegistry);
       }
 

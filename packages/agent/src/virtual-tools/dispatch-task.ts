@@ -95,31 +95,10 @@ export class DispatchTaskTool implements Tool {
         );
         isNew = true;
 
-        // 记录领域创建
-        consciousnessManager.recordMemory({
-          taskId: undefined,
-          sourceId: 'guardian',
-          domain: params.domain,
-          type: 'domain_switch',
-          summary: `新领域：${params.domain} — ${params.taskDescription.slice(0, 100)}`,
-          content: params.taskDescription,
-          relatedFiles: []
-        });
-
         debug(NS, LogLevel.BASIC, 'Created new domain child', { domain: params.domain });
       } else if (!this.isChildActive(params.domain)) {
         // 3. 存在但封存 → 激活
         consciousnessManager.reactivateChild(params.domain);
-
-        consciousnessManager.recordMemory({
-          taskId: undefined,
-          sourceId: 'guardian',
-          domain: 'global',
-          type: 'domain_switch',
-          summary: `激活领域：${params.domain}`,
-          content: `用户回到${params.domain}领域`,
-          relatedFiles: []
-        });
 
         // 更新任务描述
         execState.taskDescription = params.taskDescription;
@@ -140,7 +119,8 @@ export class DispatchTaskTool implements Tool {
         debug(NS, LogLevel.BASIC, 'Routed to existing domain child', { domain: params.domain });
       }
 
-      // 5. 创建子 AgentLoop
+      // 5. 创建子 AgentLoop（带 onStep 将输出直接发给用户）
+      const onChildStep = this.context.onChildStep;
       const childLoop = createLoop({
         allowedTools: params.allowedTools,
         maxIterations: params.maxIterations ?? 10
@@ -195,16 +175,20 @@ export class DispatchTaskTool implements Tool {
       );
       consciousnessManager.updateStatus('root', 'thinking');
 
+      // 12. 将子意识输出发给用户（不经过守护意识 conversation）
+      if (onChildStep && result.success && result.finalAnswer) {
+        onChildStep({ content: result.finalAnswer, iteration: 0 });
+      }
+
+      // 13. 返回结果给守护意识（守护意识 LLM 自己写分析总结）
       return {
         success: result.success,
         data: {
-          consciousnessId: execState.id,
           domain: params.domain,
-          summary,
+          taskDescription: params.taskDescription,
+          childResult: result.success ? result.finalAnswer : '',
           iterations: result.iterations,
-          error: result.success ? undefined : result.error,
-          // 标记这是最终回复，不需要守护意识转发
-          isFinalAnswer: true
+          error: result.success ? undefined : result.error
         }
       };
     } catch (err) {

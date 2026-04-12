@@ -21,6 +21,7 @@ import type {
 import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import type { MemoryStore } from './memory-store.js';
 import type { ContextStorage } from './context-storage.js';
+import { buildSelfAwarenessPrompt } from './consciousness-prompts.js';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
@@ -91,6 +92,16 @@ export class ConsciousnessManager {
   getRoot(): SelfAwarenessState | null {
     if (!this.root) return null;
     return this.root.state as SelfAwarenessState;
+  }
+
+  /** 重建守护意识系统提示词（反映当前领域状态） */
+  buildGuardianPrompt(): string {
+    if (!this.root) return '';
+    return buildSelfAwarenessPrompt(
+      '',
+      this.root.state as SelfAwarenessState,
+      this.root.children
+    );
   }
 
   // === 领域子意识管理 ===
@@ -247,7 +258,16 @@ export class ConsciousnessManager {
     if (!this.root) return;
     const state = this.root.state as SelfAwarenessState;
     state.recentResults.push(summary);
-    if (state.recentResults.length > 3) state.recentResults.shift();
+    if (state.recentResults.length > 5) state.recentResults.shift();
+  }
+
+  /**
+   * 添加调度记录 — 领域+请求+结果的结构化摘要
+   * 格式：用户：xxx → xxx子意识：xxx
+   */
+  addDispatchRecord(domain: string, userRequest: string, keyFinding: string): void {
+    const record = `用户：${userRequest} → ${domain}子意识：${keyFinding}`;
+    this.addRecentResult(record);
   }
 
   addFileTouched(filePath: string): void {
@@ -266,14 +286,18 @@ export class ConsciousnessManager {
 
   // === 记忆写入 ===
 
-  /** 写入流水账条目 */
+  /** 写入流水账条目（自动填充 currentTaskId） */
   recordMemory(entry: Omit<MemoryEntry, 'id' | 'createdAt'>): void {
-    this.memoryStore.store(entry);
+    const fullEntry = {
+      ...entry,
+      taskId: entry.taskId ?? this.currentTaskId ?? undefined
+    };
+    this.memoryStore.store(fullEntry);
 
     // 更新守护意识的 memoryIndex
-    if (this.root && entry.taskId) {
+    if (this.root && fullEntry.taskId) {
       const state = this.root.state as SelfAwarenessState;
-      state.memoryIndex = this.memoryStore.getIndex(entry.taskId);
+      state.memoryIndex = this.memoryStore.getIndex(fullEntry.taskId);
     }
   }
 
@@ -332,23 +356,7 @@ export class ConsciousnessManager {
     // 2. 结果摘要（守护意识会通过 compress_and_remember 写简短摘要）
     const rawSummary = result.compressedSummary ?? result.finalAnswer;
 
-    // 3. 存入记忆流水账
-    const domain = node?.state.level === 'execution'
-      ? (node.state as ExecutionContextState).domain
-      : 'global';
-
-    this.recordMemory({
-      taskId: this.currentTaskId ?? undefined,
-      sourceId: consciousnessId,
-      domain,
-      type: 'result_summary',
-      summary: rawSummary.slice(0, 200), // 索引用简短摘要
-      content: rawSummary,
-      relatedFiles: result.filesTouched
-    });
-
-    // 4. 更新守护意识
-    this.addRecentResult(rawSummary.slice(0, 100));
+    // 3. 记录文件（不写 memory — 守护意识通过 compress_and_remember 写自己的分析）
     for (const f of result.filesTouched) {
       this.addFileTouched(f);
     }
@@ -356,7 +364,9 @@ export class ConsciousnessManager {
     debug(NS, LogLevel.BASIC, 'Result compressed', {
       consciousnessId,
       success: result.success,
-      domain
+      domain: node?.state.level === 'execution'
+        ? (node.state as ExecutionContextState).domain
+        : 'global'
     });
 
     return rawSummary;

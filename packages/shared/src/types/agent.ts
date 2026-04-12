@@ -30,6 +30,8 @@ export interface Message {
   role: 'system' | 'user' | 'assistant';
   content: string;
   timestamp?: Date;
+  /** 工具结果标识：产生此消息的工具名列表（用于意识体消息过滤） */
+  toolNames?: string[];
 }
 
 export interface FileContent {

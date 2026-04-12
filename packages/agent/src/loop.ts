@@ -333,8 +333,9 @@ export class AgentLoop {
         }).join('\n');
 
         const toolResultMsg = `工具执行结果:\n${toolResultsText}`;
+        const toolNames = toolResult.results.map((r: { toolCall: { name: string } }) => r.toolCall.name);
         context.messages.push({ role: 'user', content: toolResultMsg });
-        addMessage(conversation, { role: 'user', content: toolResultMsg });
+        addMessage(conversation, { role: 'user', content: toolResultMsg, toolNames });
 
         // 记录工具结果到日志
         for (const r of toolResult.results) {

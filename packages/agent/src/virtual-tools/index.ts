@@ -15,7 +15,7 @@
 
 import type { ToolRegistry } from '@tramber/tool';
 import type { ConsciousnessManager } from '../consciousness-manager.js';
-import type { AgentLoop } from '../loop.js';
+import type { AgentLoop, AgentLoopStep } from '../loop.js';
 import { DispatchTaskTool } from './dispatch-task.js';
 import { RecallMemoryTool } from './recall-memory.js';
 import { RequestApprovalTool } from './request-approval.js';
@@ -34,6 +34,8 @@ export interface VirtualToolContext {
   currentConsciousnessId: string;
   /** 权限确认回调 */
   onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
+  /** 子意识输出直接发给用户的回调（不经过守护意识 conversation） */
+  onChildStep?: (step: AgentLoopStep) => void;
 }
 
 /**

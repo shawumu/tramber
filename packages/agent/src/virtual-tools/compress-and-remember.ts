@@ -1,8 +1,9 @@
 // packages/agent/src/virtual-tools/compress-and-remember.ts
 /**
- * compress_and_remember — 压缩当前对话信息并存入记忆
+ * compress_and_remember — 守护意识的分析总结标记工具
  *
- * 仅自我感知意识可用。
+ * 守护意识在 dispatch_task 返回后调用此工具，标记分析完成。
+ * 实际的 memory 写入在 engine 后处理阶段从 conversation 同步，保证 context 和 memory 一致。
  */
 
 import type { Tool, ToolResult } from '@tramber/tool';
@@ -14,26 +15,20 @@ const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 export class CompressAndRememberTool implements Tool {
   id = 'compress_and_remember';
   name = 'compress_and_remember';
-  description = '将子意识完成后的结果记入记忆流水账。summary 必须是你（守护意识）写的简短摘要，用一句话概括用户请求和结果，不要复制子意识的原文。';
+  description = 'dispatch_task 返回后，你用此工具确认分析总结已完成。你在下一条消息中输出你的分析总结文本。';
   category = 'execution' as const;
   permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {
-      phase: { type: 'string', description: '子任务描述（简短标签）' },
-      summary: { type: 'string', description: '你写的简短摘要：用户请求了什么 + 最终结果（一句话，≤50字）' },
-      keyDecisions: {
-        type: 'array',
-        items: { type: 'string', description: '关键决策' },
-        description: '关键决策列表'
-      },
+      domain: { type: 'string', description: '路由到的领域' },
       relatedFiles: {
         type: 'array',
         items: { type: 'string', description: '文件路径' },
-        description: '相关文件列表'
+        description: '涉及到的文件'
       }
     },
-    required: ['phase', 'summary']
+    required: ['domain']
   };
 
   private context: VirtualToolContext;
@@ -44,62 +39,30 @@ export class CompressAndRememberTool implements Tool {
 
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
-      phase: string;
-      summary: string;
-      keyDecisions?: string[];
+      domain: string;
       relatedFiles?: string[];
     };
 
-    if (!params.phase || !params.summary) {
-      return { success: false, error: 'phase and summary are required' };
+    if (!params.domain) {
+      return { success: false, error: 'domain is required' };
     }
 
     const { consciousnessManager } = this.context;
 
-    // 存入记忆
-    const state = consciousnessManager.getRoot();
-    if (!state) {
-      return { success: false, error: 'No active root consciousness' };
-    }
-
-    // 通过 memoryStore 直接存储
-    const memoryStore = (consciousnessManager as any).memoryStore;
-    const currentTaskId = (consciousnessManager as any).currentTaskId;
-    if (memoryStore) {
-      memoryStore.store({
-        taskId: currentTaskId ?? undefined,
-        phase: params.phase,
-        type: 'conversation_summary',
-        summary: params.summary,
-        content: params.summary,
-        relatedFiles: params.relatedFiles ?? []
-      });
-    }
-
-    // 记录关键决策
-    if (params.keyDecisions) {
-      for (const d of params.keyDecisions) {
-        consciousnessManager.addDecision(d);
+    // 记录文件
+    if (params.relatedFiles) {
+      for (const f of params.relatedFiles) {
+        consciousnessManager.addFileTouched(f);
       }
     }
 
-    // 更新记忆索引
-    if (memoryStore) {
-      state.memoryIndex = memoryStore.getIndex();
-    }
-
-    debug(NS, LogLevel.BASIC, 'Compressed and remembered', {
-      phase: params.phase,
-      decisions: params.keyDecisions?.length ?? 0,
-      files: params.relatedFiles?.length ?? 0
+    debug(NS, LogLevel.BASIC, 'Analysis confirmed', {
+      domain: params.domain
     });
 
     return {
       success: true,
-      data: {
-        message: `已压缩并存储到记忆（阶段: ${params.phase}）`,
-        memoryCount: state.memoryIndex.length
-      }
+      data: { domain: params.domain }
     };
   }
 }
