@@ -276,16 +276,14 @@ export class AgentLoop {
         }
 
         // 检查是否有 dispatch_task 返回（意识体模式下）
-        // Stage 9: 不提前返回，让守护意识继续调用 analyze_turn
+        // 不提前返回，让守护意识继续调用 analyze_turn
         const dispatchResult = toolResult.results.find(
           (r: any) => r.toolCall.name === 'dispatch_task' && r.success
         );
         if (dispatchResult && dispatchResult.data) {
           debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'dispatch_task returned', {
-            domain: (dispatchResult.data as any).domain,
-            isFinalAnswer: (dispatchResult.data as any).isFinalAnswer
+            domain: (dispatchResult.data as any).domain
           });
-          // 不返回，继续循环让守护意识调用 analyze_turn
         }
 
         // 将助手消息添加到上下文和 conversation（仅当有内容时）

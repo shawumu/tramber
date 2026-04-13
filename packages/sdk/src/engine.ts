@@ -380,22 +380,19 @@ export class TramberEngine {
               onPermissionRequired: options.onPermissionRequired,
               userSkills: this.userSkillRegistry.getEnabled(),
               contextBuffer: this.contextBuffer,
-              // 子意识的流式输出直接发给用户
+              // 子意识的输出：转发 LLM 文本（流式 content 和非流式 thinking），不转发工具进度
               onStep: (step) => {
-                if (step.content) {
-                  onProgress({ type: 'text_delta', content: step.content });
+                if (!step.toolCall && !step.toolResult) {
+                  const text = step.content || step.thinking;
+                  if (text) onProgress({ type: 'text_delta', content: text });
                 }
               }
+
+
             });
           },
           currentConsciousnessId: 'root',
-          onPermissionRequired: options.onPermissionRequired,
-          onChildStep: (step) => {
-            // 子意识输出直接发给用户
-            if (step.content) {
-              onProgress({ type: 'text_delta', content: step.content });
-            }
-          }
+          onPermissionRequired: options.onPermissionRequired
         };
 
         // 注册虚拟工具到主 registry
@@ -565,7 +562,7 @@ export class TramberEngine {
 
       return {
         success: result.success,
-        result: result.success ? result.finalAnswer : undefined,
+        result: this.consciousnessManager ? undefined : (result.success ? result.finalAnswer : undefined),
         error: result.success ? undefined : result.error,
         steps,
         terminatedReason: result.terminatedReason,

@@ -122,8 +122,7 @@ export class DispatchTaskTool implements Tool {
         debug(NS, LogLevel.BASIC, 'Routed to existing domain child', { domain: params.domain });
       }
 
-      // 5. 创建子 AgentLoop（带 onStep 将输出直接发给用户）
-      const onChildStep = this.context.onChildStep;
+      // 5. 创建子 AgentLoop（子意识的 onStep 将输出直接发给用户）
       const childLoop = createLoop({
         allowedTools: params.allowedTools,
         maxIterations: params.maxIterations ?? 10
@@ -190,10 +189,8 @@ export class DispatchTaskTool implements Tool {
       );
       consciousnessManager.updateStatus('root', 'thinking');
 
-      // 13. 将子意识输出发给用户（不经过守护意识 conversation）
-      if (onChildStep && result.success && result.finalAnswer) {
-        onChildStep({ content: result.finalAnswer, iteration: 0 });
-      }
+      // 13. 子意识输出已通过子 loop 的 onStep（流式/非流式）直接发给用户
+      // 不再通过 onChildStep 重复发送
 
       // 14. 返回结果给守护意识（守护意识 LLM 调用 analyze_turn 写分析总结）
       return {
@@ -201,9 +198,7 @@ export class DispatchTaskTool implements Tool {
         data: {
           domain: params.domain,
           taskDescription: params.taskDescription,
-          childResult: result.success ? result.finalAnswer : '',
           iterations: result.iterations,
-          isFinalAnswer: true,  // Stage 9: 标记为最终答案，直接返回给用户
           error: result.success ? undefined : result.error
         }
       };
