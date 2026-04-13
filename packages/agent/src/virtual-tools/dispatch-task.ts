@@ -4,10 +4,13 @@
  *
  * 守护意识通过此工具将用户请求路由到领域子意识。
  * 支持查找已有子意识、激活封存子意识、创建新子意识。
+ *
+ * Stage 9 新增：组装执行纲领注入子意识 system prompt
  */
 
 import type { Tool, ToolResult } from '@tramber/tool';
 import type { VirtualToolContext } from './index.js';
+import type { ExecutionContext } from '@tramber/shared';
 import { buildExecutionPrompt } from '../consciousness-prompts.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import { createConversation, addMessage } from '../conversation.js';
@@ -126,17 +129,29 @@ export class DispatchTaskTool implements Tool {
         maxIterations: params.maxIterations ?? 10
       });
 
-      // 6. 构建子意识 system prompt
-      const basePrompt = childLoop.buildSystemPrompt();
-      const execPrompt = buildExecutionPrompt(basePrompt, execState);
+      // 6. Stage 9: 组装执行纲领（从实体图谱）
+      const taskId = consciousnessManager.getTaskId();
+      let execContext: ExecutionContext | undefined;
+      if (taskId) {
+        execContext = consciousnessManager.assembleExecutionContext(taskId, params.domain);
+        debug(NS, LogLevel.BASIC, 'Execution context assembled', {
+          domain: params.domain,
+          纲领长度: execContext.纲领.length,
+          资源数: execContext.资源索引.length
+        });
+      }
 
-      // 7. 创建/复用子意识 conversation
+      // 7. 构建子意识 system prompt（注入执行纲领）
+      const basePrompt = childLoop.buildSystemPrompt();
+      const execPrompt = buildExecutionPrompt(basePrompt, execState, undefined, execContext);
+
+      // 8. 创建/复用子意识 conversation
       const conversation = createConversation({
         systemPrompt: execPrompt,
         projectInfo: { rootPath: process.cwd(), name: 'project' }
       });
 
-      // 8. 创建任务
+      // 9. 创建任务
       const task: Task = {
         id: execState.id,
         description: params.taskDescription,
@@ -144,17 +159,17 @@ export class DispatchTaskTool implements Tool {
         isComplete: false
       };
 
-      // 9. 执行子 loop
+      // 10. 执行子 loop
       consciousnessManager.updateStatus(execState.id, 'thinking');
       const result = await childLoop.execute(task, conversation);
 
-      // 10. 更新状态
+      // 11. 更新状态
       consciousnessManager.updateStatus(
         execState.id,
         result.success ? 'active' : 'failed'
       );
 
-      // 11. 压缩结果，记入 memory
+      // 12. 压缩结果，记入 memory
       consciousnessManager.updateStatus('root', 'compressing');
       const fullMessages: Array<{ role: string; content: string }> = [
         { role: 'system', content: conversation.systemPrompt },
@@ -175,12 +190,12 @@ export class DispatchTaskTool implements Tool {
       );
       consciousnessManager.updateStatus('root', 'thinking');
 
-      // 12. 将子意识输出发给用户（不经过守护意识 conversation）
+      // 13. 将子意识输出发给用户（不经过守护意识 conversation）
       if (onChildStep && result.success && result.finalAnswer) {
         onChildStep({ content: result.finalAnswer, iteration: 0 });
       }
 
-      // 13. 返回结果给守护意识（守护意识 LLM 自己写分析总结）
+      // 14. 返回结果给守护意识（守护意识 LLM 调用 analyze_turn 写分析总结）
       return {
         success: result.success,
         data: {
@@ -188,6 +203,7 @@ export class DispatchTaskTool implements Tool {
           taskDescription: params.taskDescription,
           childResult: result.success ? result.finalAnswer : '',
           iterations: result.iterations,
+          isFinalAnswer: true,  // Stage 9: 标记为最终答案，直接返回给用户
           error: result.success ? undefined : result.error
         }
       };

@@ -40,6 +40,8 @@ export interface AgentLoopOptions {
   onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
   /** 是否流式输出 */
   stream?: boolean;
+  /** 是否打印详细的 stream delta 日志（默认 false） */
+  verboseStreamLog?: boolean;
   /** 用户安装的 Skill 列表（注入系统提示词） */
   userSkills?: SkillManifest[];
   /** 上下文缓冲区（调试用） */
@@ -103,6 +105,7 @@ export class AgentLoop {
     maxIterations: number;
     onStep: (step: AgentLoopStep) => void;
     stream: boolean;
+    verboseStreamLog: boolean;
   };
   private steps: AgentLoopStep[] = [];
   private contextBuffer?: ContextBuffer;
@@ -112,6 +115,7 @@ export class AgentLoop {
       maxIterations: options.maxIterations ?? 10,
       onStep: options.onStep ?? (() => { }),
       stream: options.stream ?? false,
+      verboseStreamLog: options.verboseStreamLog ?? false,
       agent: options.agent,
       provider: options.provider,
       toolRegistry: options.toolRegistry,
@@ -271,26 +275,17 @@ export class AgentLoop {
           this.options.onStep(postStep);
         }
 
-        // 检查是否有 dispatch_task 返回了 isFinalAnswer（意识体模式下的最终回复）
+        // 检查是否有 dispatch_task 返回（意识体模式下）
+        // Stage 9: 不提前返回，让守护意识继续调用 analyze_turn
         const dispatchResult = toolResult.results.find(
-          (r: any) => r.toolCall.name === 'dispatch_task' && r.success && r.data?.isFinalAnswer
+          (r: any) => r.toolCall.name === 'dispatch_task' && r.success
         );
         if (dispatchResult && dispatchResult.data) {
-          const summary = (dispatchResult.data as any).summary || '';
-          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'dispatch_task returned final answer', {
-            summaryLength: summary.length
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'dispatch_task returned', {
+            domain: (dispatchResult.data as any).domain,
+            isFinalAnswer: (dispatchResult.data as any).isFinalAnswer
           });
-          // 将结果存入 conversation
-          if (summary) {
-            addMessage(conversation, { role: 'assistant', content: summary });
-          }
-          return {
-            success: true,
-            finalAnswer: summary,
-            steps: [...this.steps],
-            iterations: i + 1,
-            terminatedReason: 'completed'
-          };
+          // 不返回，继续循环让守护意识调用 analyze_turn
         }
 
         // 将助手消息添加到上下文和 conversation（仅当有内容时）
@@ -642,7 +637,8 @@ export class AgentLoop {
         messages: context.messages,
         tools: toolDefinitions,
         temperature: this.options.agent.temperature ?? 0.7,
-        maxTokens: this.options.agent.maxTokens ?? 4096
+        maxTokens: this.options.agent.maxTokens ?? 4096,
+        verboseStreamLog: this.options.verboseStreamLog
       };
 
       let fullContent = '';

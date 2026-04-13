@@ -247,3 +247,145 @@ export interface ApprovalResponse {
   feedback?: string;
   modifiedParameters?: Record<string, unknown>;
 }
+
+// === 实体图谱（Stage 9） ===
+
+/** 实体类型 */
+export type EntityType = 'user_request' | 'task' | 'decision' | 'resource' | 'constraint' | 'event';
+
+/** 资源子类型 */
+export type ResourceType = 'file' | 'knowledge' | 'api' | 'pattern';
+
+/** 关系类型 */
+export type RelationType =
+  | 'initiates'      // 用户需求发起任务
+  | 'produces'       // 任务产生资源
+  | 'triggers'       // 任务触发决策
+  | 'leads_to'       // 任务衍生新任务
+  | 'requires'       // 任务依赖资源
+  | 'blocked_by'     // 任务被约束阻塞
+  | 'discovered_in'  // 资源在任务中发现
+  | 'produced_by'    // 资源由任务产出
+  | 'required_by';   // 资源被任务依赖
+
+/** 关系边 */
+export interface Relation {
+  type: RelationType;
+  target: string;  // 目标实体 ID
+}
+
+/** 基础实体 — 所有实体共享 */
+export interface BaseEntity {
+  id: string;           // 类型前缀 ID，如 "t:a3x7f", "u:b1c2d"
+  type: EntityType;
+  order: number;        // 全局排序，按生成顺序递增（1, 2, 3...）
+  version: string;      // 版本：数字版本（v1, v2）或时间版本（ISO 时间戳）
+  domain: string;       // 所属领域（编码、文档、部署...）
+  content: string;      // 实体内容
+  relations: Relation[];
+  createdAt: string;
+}
+
+/** 用户需求实体 */
+export interface UserRequestEntity extends BaseEntity {
+  type: 'user_request';
+  originalInput: string;   // 用户原始输入文本
+  parsedIntent: string;    // 解析后的意图
+  turnNumber: number;      // 第几轮对话（1, 2, 3...）
+}
+
+/** 任务实体 */
+export interface TaskEntity extends BaseEntity {
+  type: 'task';
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  taskDescription: string;
+}
+
+/** 决策实体 */
+export interface DecisionEntity extends BaseEntity {
+  type: 'decision';
+  decisionType: 'technical' | 'routing' | 'strategy';
+  rationale?: string;  // 决策理由
+}
+
+/** 约束实体 */
+export interface ConstraintEntity extends BaseEntity {
+  type: 'constraint';
+  constraintType: 'user_defined' | 'system' | 'domain';
+  active: boolean;  // 是否仍生效
+}
+
+/** 事件实体 */
+export interface EventEntity extends BaseEntity {
+  type: 'event';
+  eventType: 'domain_switch' | 'tool_call' | 'progress' | 'error' | 'milestone';
+  relatedTaskId?: string;
+}
+
+/** 资源实体 */
+export interface ResourceEntity extends BaseEntity {
+  type: 'resource';
+  uri: string;           // 唯一标识符：file://path / knowledge://id / api://name
+  resourceType: ResourceType;
+  summary: ResourceSummary;
+}
+
+/** 资源摘要 — 按文件类型 */
+export type ResourceSummary = VueSummary | JsTsSummary | JsonSummary | HtmlSummary | MdSummary | GenericSummary;
+
+/** Vue 文件摘要 */
+export interface VueSummary {
+  template: string[];    // 组件列表：["filter", "table", "pagination"]
+  script: {
+    vars: number;
+    functions: number;
+  };
+}
+
+/** JS/TS 文件摘要 */
+export interface JsTsSummary {
+  imports: string[];
+  exports: string[];
+  functions: number;
+}
+
+/** JSON 文件摘要 */
+export interface JsonSummary {
+  keys: string[];
+  nestedDepth: number;
+}
+
+/** HTML 文件摘要 */
+export interface HtmlSummary {
+  elements: string[];
+  scripts: number;
+}
+
+/** Markdown 文件摘要 */
+export interface MdSummary {
+  sections: string[];
+  codeBlocks: number;
+}
+
+/** 通用摘要（其他类型） */
+export interface GenericSummary {
+  type: string;
+  size?: number;
+  description?: string;
+}
+
+/** 实体查询参数 */
+export interface EntityQuery {
+  taskId: string;
+  type?: EntityType;
+  domain?: string;
+  keyword?: string;
+  limit?: number;
+}
+
+/** 执行 Context 组装结果 */
+export interface ExecutionContext {
+  纲领: string;
+  资源索引: Array<{ id: string; uri: string; summary: ResourceSummary }>;
+  最近对话: Array<{ role: string; content: string }>;
+}

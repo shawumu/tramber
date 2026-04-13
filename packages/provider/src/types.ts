@@ -24,6 +24,8 @@ export interface ChatOptions {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  /** 是否打印详细的 stream delta 日志（默认 false，只输出最终合并结果） */
+  verboseStreamLog?: boolean;
 }
 
 export interface ChatResponse {

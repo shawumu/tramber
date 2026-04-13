@@ -379,7 +379,13 @@ export class TramberEngine {
               stream: options.stream,
               onPermissionRequired: options.onPermissionRequired,
               userSkills: this.userSkillRegistry.getEnabled(),
-              contextBuffer: this.contextBuffer
+              contextBuffer: this.contextBuffer,
+              // 子意识的流式输出直接发给用户
+              onStep: (step) => {
+                if (step.content) {
+                  onProgress({ type: 'text_delta', content: step.content });
+                }
+              }
             });
           },
           currentConsciousnessId: 'root',

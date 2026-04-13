@@ -16,7 +16,11 @@ import type {
   MemoryEntry,
   MemoryQuery,
   ApprovalRequest,
-  ApprovalResponse
+  ApprovalResponse,
+  BaseEntity,
+  ResourceEntity,
+  TaskEntity,
+  ExecutionContext
 } from '@tramber/shared';
 import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import type { MemoryStore } from './memory-store.js';
@@ -450,6 +454,97 @@ export class ConsciousnessManager {
       domains: Object.keys(state.domains).length,
       memories: state.memoryIndex.length
     });
+  }
+
+  // === Stage 9: 实体图谱方法 ===
+
+  /** 获取当前 taskId */
+  getTaskId(): string | null {
+    return this.currentTaskId;
+  }
+
+  /** 获取 MemoryStore 实例 */
+  getMemoryStore(): MemoryStore {
+    return this.memoryStore;
+  }
+
+  /** 获取当前活跃的执行意识状态 */
+  getCurrentExecutionContext(): ExecutionContextState | null {
+    if (!this.activeNode || this.activeNode.id === 'root') return null;
+    return this.activeNode.state as ExecutionContextState;
+  }
+
+  /**
+   * 组装执行纲领 — 从实体图谱自动组装
+   *
+   * 当执行意识收到任务时调用，查询关联实体，组装执行纲领。
+   * 用于 dispatch_task 注入 system prompt 和 rebuild_context 重建。
+   */
+  assembleExecutionContext(taskId: string, domain: string): ExecutionContext {
+    if (!taskId) {
+      return { 纲领: '', 资源索引: [], 最近对话: [] };
+    }
+
+    // 1. 从 Memory 查询本领域的实体
+    const entities = this.memoryStore.queryEntities({ taskId, domain });
+
+    // 2. 查找当前任务实体（未完成的）
+    const currentTask = entities.find(e =>
+      e.type === 'task' && (e as TaskEntity).status !== 'completed'
+    ) as TaskEntity | undefined;
+
+    if (!currentTask) {
+      return { 纲领: '', 资源索引: [], 最近对话: [] };
+    }
+
+    // 3. 查询关联实体（通过 relations）
+    const related: BaseEntity[] = [];
+    for (const rel of currentTask.relations) {
+      const entity = this.memoryStore.getEntity(taskId, rel.target);
+      if (entity) related.push(entity);
+    }
+
+    // 4. 查找发起此任务的用户需求
+    const userRequest = related.find(e => e.type === 'user_request');
+
+    // 5. 组装执行纲领文本
+    const 纲领 = `
+## 执行纲领
+用户需求 [${userRequest?.id ?? '未知'}] ${userRequest?.content ?? '无'}
+
+当前任务 [${currentTask.id}] ${currentTask.content}
+
+上游任务：${related.filter(e => e.type === 'task' && e.id !== currentTask.id).map(e => `[${e.id}] ${e.content}`).join('\n') || '无'}
+
+技术决策：${related.filter(e => e.type === 'decision').map(e => `[${e.id}] ${e.content}`).join('\n') || '无'}
+
+关联资源：${related.filter(e => e.type === 'resource').map(e => {
+  const r = e as ResourceEntity;
+  return `[${e.id}] ${r.uri}`;
+}).join('\n') || '无'}
+
+约束条件：${entities.filter(e => e.type === 'constraint').map(e => `[${e.id}] ${e.content}`).join('\n') || '无'}
+`;
+
+    // 6. 资源索引（摘要列表）
+    const 资源索引 = related.filter(e => e.type === 'resource').map(e => {
+      const r = e as ResourceEntity;
+      return {
+        id: e.id,
+        uri: r.uri,
+        summary: r.summary
+      };
+    });
+
+    debug(NS, LogLevel.BASIC, 'Execution context assembled', {
+      taskId,
+      domain,
+      currentTaskId: currentTask.id,
+      relatedCount: related.length,
+      资源数: 资源索引.length
+    });
+
+    return { 纲领, 资源索引, 最近对话: [] };
   }
 
   // === 内部方法 ===

@@ -189,13 +189,16 @@ export class AnthropicProvider implements AIProvider {
 
       let currentToolUse: { id?: string; name?: string; input: string } | null = null;
       let inputTokens = 0;
+      const verboseLog = options.verboseStreamLog ?? false;
 
       for await (const event of stream) {
-        // 记录每个事件的原始内容
-        debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.VERBOSE, '[STREAM EVENT]', {
-          type: event.type,
-          event: JSON.stringify(event).slice(0, 500)
-        });
+        // 仅 verbose 模式打印每个事件
+        if (verboseLog) {
+          debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.VERBOSE, '[STREAM EVENT]', {
+            type: event.type,
+            event: JSON.stringify(event).slice(0, 500)
+          });
+        }
 
         switch (event.type) {
           case 'message_start':
@@ -206,10 +209,12 @@ export class AnthropicProvider implements AIProvider {
             break;
 
           case 'content_block_start':
-            debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[CONTENT_BLOCK_START]', {
-              type: event.content_block.type,
-              block: JSON.stringify(event.content_block)
-            });
+            if (verboseLog) {
+              debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[CONTENT_BLOCK_START]', {
+                type: event.content_block.type,
+                block: JSON.stringify(event.content_block)
+              });
+            }
             if (event.content_block.type === 'tool_use') {
               currentToolUse = {
                 id: (event.content_block as any).id,
@@ -220,10 +225,12 @@ export class AnthropicProvider implements AIProvider {
             break;
 
           case 'content_block_delta':
-            debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[CONTENT_BLOCK_DELTA]', {
-              deltaType: event.delta.type,
-              delta: JSON.stringify(event.delta).slice(0, 200)
-            });
+            if (verboseLog) {
+              debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[CONTENT_BLOCK_DELTA]', {
+                deltaType: event.delta.type,
+                delta: JSON.stringify(event.delta).slice(0, 200)
+              });
+            }
             if (event.delta.type === 'text_delta') {
               yield {
                 content: event.delta.text,
@@ -231,9 +238,11 @@ export class AnthropicProvider implements AIProvider {
               };
             } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
               const partialJson = (event.delta as any).partial_json || '';
-              debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[INPUT_JSON_DELTA]', {
-                partialJson: partialJson.slice(0, 100)
-              });
+              if (verboseLog) {
+                debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[INPUT_JSON_DELTA]', {
+                  partialJson: partialJson.slice(0, 100)
+                });
+              }
               // Anthropic API sends incremental partial_json chunks — always append
               currentToolUse.input += partialJson;
             }
@@ -241,6 +250,7 @@ export class AnthropicProvider implements AIProvider {
 
           case 'content_block_stop':
             if (currentToolUse && currentToolUse.id && currentToolUse.name) {
+              // 总是打印工具调用完成（这是最终合并结果）
               debug(NAMESPACE.PROVIDER_ANTHROPIC, LogLevel.BASIC, '[TOOL_USE_COMPLETE]', {
                 id: currentToolUse.id,
                 name: currentToolUse.name,

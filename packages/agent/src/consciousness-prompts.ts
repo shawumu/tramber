@@ -9,7 +9,8 @@
 import type {
   SelfAwarenessState,
   ExecutionContextState,
-  ConsciousnessNode
+  ConsciousnessNode,
+  ExecutionContext
 } from '@tramber/shared';
 
 /**
@@ -34,8 +35,8 @@ export function buildSelfAwarenessPrompt(
 1. 理解用户意图，判断所属领域
 2. 通过 dispatch_task 路由到对应的领域子意识
 3. 子意识的完整回复已直接展示给用户，你不需要转发
-4. dispatch_task 返回后，你必须调用 compress_and_remember 写你的分析总结
-5. compress_and_remember 调用完成后，你的回复就是一行分析总结，格式：
+4. dispatch_task 返回后，你必须调用 analyze_turn 写你的分析总结（生成实体）
+5. analyze_turn 调用完成后，你的回复就是一行分析总结，格式：
    用户：用户的请求概括 → 领域名子意识：子意识发现/完成的关键信息概括
 
 无论用户说什么（包括简单问候），都必须通过 dispatch_task 派生子意识处理。
@@ -52,8 +53,8 @@ ${rulesSection}
 
 ## 工具
 - dispatch_task: 路由用户请求到领域子意识
-- compress_and_remember: dispatch_task 返回后调用，写你的分析总结（必须调用）
-- recall_memory: 检索历史记忆
+- analyze_turn: dispatch_task 返回后调用，生成结构化实体（用户需求、任务、决策、约束）
+- recall_memory: 检索历史实体摘要
 `;
 }
 
@@ -61,15 +62,27 @@ ${rulesSection}
  * 生成领域子意识的系统提示词
  *
  * 子意识的 prompt 也不拼接完整的 basePrompt，只包含必要的环境信息和工具。
+ * Stage 9 新增：支持执行纲领注入（从实体图谱组装）
  */
 export function buildExecutionPrompt(
   _basePrompt: string,
   state: ExecutionContextState,
-  toolNames?: string[]
+  toolNames?: string[],
+  execContext?: ExecutionContext
 ): string {
   const toolList = toolNames && toolNames.length > 0
     ? toolNames.join('、')
     : 'read_file、write_file、edit_file、glob、grep、exec';
+
+  // Stage 9: 执行纲领（如果有）
+  const 纲领Section = execContext && execContext.纲领
+    ? `\n## 执行纲领（从实体图谱组装）\n${execContext.纲领}`
+    : '';
+
+  // Stage 9: 资源索引（如果有）
+  const 资源Section = execContext && execContext.资源索引.length > 0
+    ? `\n## 资源索引\n可用资源（可通过 recall_resource 获取完整内容）:\n${execContext.资源索引.map(r => `- [${r.id}] ${r.uri}`).join('\n')}`
+    : '';
 
   return `你是 Tramber 的领域执行意识，领域：${state.domain}。
 对外你是"Tramber"，用户感知不到你的执行意识身份。直接完成任务并返回结果。
@@ -84,6 +97,8 @@ export function buildExecutionPrompt(
 
 ## 当前任务
 ${state.taskDescription}
+${纲领Section}
+${资源Section}
 
 ## 上下文
 ${state.parentContext || '（无额外上下文）'}
@@ -92,9 +107,11 @@ ${state.parentContext || '（无额外上下文）'}
 - 专注于领域内的任务，高效完成
 - 重大变更（删除文件、修改关键配置）用 request_approval 请求审批
 - 完成后给出清晰的结果总结
+- 每轮工具调用后，使用 record_discovery 记录发现的资源（便于后续 context 重建）
+- Context 过长时，使用 rebuild_context 重建（从实体图谱无损组装）
 
 ## 工具
-${toolList}、report_status、request_approval、escalate
+${toolList}、report_status、request_approval、escalate、record_discovery、recall_resource、rebuild_context
 `;
 }
 

@@ -13,7 +13,10 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import type { MemoryEntry, MemoryIndexEntry, MemoryQuery, MemoryType, OnlineMemory } from '@tramber/shared';
+import type {
+  MemoryEntry, MemoryIndexEntry, MemoryQuery, MemoryType, OnlineMemory,
+  BaseEntity, EntityQuery, EntityType, ResourceEntity, ResourceSummary, Relation
+} from '@tramber/shared';
 import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MEMORY;
@@ -35,16 +38,27 @@ interface OfflineIndexEntry {
   summary: string;
 }
 
+/** 实体索引条目 */
+interface EntityIndexEntry {
+  id: string;           // 类型前缀 ID
+  type: EntityType;
+  domain: string;
+  order: number;
+}
+
 export class MemoryStore {
   private rootDir: string;
   private onlineThreshold: number;
   private recentKeep: number;
 
   private indexCache: Map<string, OfflineIndexEntry[]> = new Map(); // taskId -> index
+  private entityIndexCache: Map<string, EntityIndexEntry[]> = new Map(); // taskId -> entity index
   /** Online Memory 缓存 */
   private onlineCache: OnlineMemory | null = null;
   /** 上次概括时的 Offline 总量（用于判断是否需要重新概括） */
   private lastSummarizedCount = 0;
+  /** 全局实体计数器 */
+  private entityOrderCounter: number = 0;
 
   constructor(options: MemoryStoreOptions) {
     this.rootDir = options.rootDir;
@@ -326,6 +340,261 @@ export class MemoryStore {
       return JSON.parse(raw);
     } catch {
       return null;
+    }
+  }
+
+  // === 实体图谱方法（Stage 9） ===
+
+  /** 存储实体 */
+  storeEntity(taskId: string, entity: Omit<BaseEntity, 'id' | 'order' | 'createdAt'>): BaseEntity {
+    // 生成类型前缀 ID：类型前缀:5位短ID
+    // 结果格式：u:a3x7f, t:mnwsh, e:k4udw 等
+    const prefix = this.getTypePrefix(entity.type);
+    const rawId = generateId(prefix); // 返回 "u-mnwsh3ju-tevi5yf"
+    const shortId = rawId.split('-')[1]?.slice(0, 5) || rawId.slice(0, 5);
+    const id = `${prefix}:${shortId}`;
+
+    // 获取并递增 order
+    const order = this.getNextEntityOrder(taskId);
+
+    // 根据类型决定版本策略
+    const version = this.getVersionStrategy(entity.type);
+
+    const fullEntity: BaseEntity = {
+      ...entity,
+      id,
+      order,
+      version,
+      createdAt: new Date().toISOString()
+    };
+
+    // 确保目录存在
+    const taskDir = this.getTaskDir(taskId);
+    const entitiesDir = join(taskDir, 'entities');
+    if (!existsSync(entitiesDir)) {
+      mkdirSync(entitiesDir, { recursive: true });
+    }
+
+    // 写入实体文件（文件名用 ID，前缀中的冒号替换为横线）
+    const fileName = id.replace(':', '-');
+    const entityPath = join(entitiesDir, `${fileName}.json`);
+    try {
+      writeFileSync(entityPath, JSON.stringify(fullEntity, null, 2), 'utf-8');
+    } catch (err) {
+      debugError(NS, 'Failed to write entity', err);
+      throw err;
+    }
+
+    // 更新实体索引
+    const indexEntry: EntityIndexEntry = {
+      id: fullEntity.id,
+      type: fullEntity.type,
+      domain: fullEntity.domain,
+      order: fullEntity.order
+    };
+    const index = this.loadEntityIndex(taskId);
+    index.push(indexEntry);
+    this.saveEntityIndex(taskId, index);
+
+    // 清除缓存
+    this.entityIndexCache.delete(taskId);
+
+    debug(NS, LogLevel.BASIC, 'Entity stored', { id: fullEntity.id, type: fullEntity.type, domain: fullEntity.domain, taskId });
+    return fullEntity;
+  }
+
+  /** 获取实体 */
+  getEntity(taskId: string, id: string): BaseEntity | null {
+    try {
+      const fileName = id.replace(':', '-');
+      const entityPath = join(this.getTaskDir(taskId), 'entities', `${fileName}.json`);
+      if (!existsSync(entityPath)) return null;
+      const raw = readFileSync(entityPath, 'utf-8');
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 查询实体 */
+  queryEntities(query: EntityQuery): BaseEntity[] {
+    const { taskId, type, domain, keyword, limit = 20 } = query;
+    if (!taskId) return [];
+
+    const index = this.loadEntityIndex(taskId);
+
+    let matchedIds = index
+      .filter(entry => {
+        if (type && entry.type !== type) return false;
+        if (domain && entry.domain !== domain) return false;
+        return true;
+      })
+      .map(entry => entry.id);
+
+    // 按顺序倒序（最新的优先）
+    matchedIds = matchedIds.reverse().slice(0, limit);
+
+    const entities = matchedIds.map(id => this.getEntity(taskId, id)).filter((e): e is BaseEntity => e !== null);
+
+    // keyword 过滤需要加载实体内容
+    if (keyword) {
+      return entities.filter(e => e.content.toLowerCase().includes(keyword.toLowerCase()));
+    }
+
+    return entities;
+  }
+
+  /** 按领域查询实体 */
+  queryByDomain(taskId: string, domain: string): BaseEntity[] {
+    return this.queryEntities({ taskId, domain });
+  }
+
+  /** 按类型查询实体 */
+  queryByType(taskId: string, type: EntityType): BaseEntity[] {
+    return this.queryEntities({ taskId, type });
+  }
+
+  /** 查找资源实体（用于去重） */
+  findByUri(taskId: string, uri: string): ResourceEntity | null {
+    const index = this.loadEntityIndex(taskId);
+    for (const entry of index) {
+      if (entry.type === 'resource') {
+        const entity = this.getEntity(taskId, entry.id);
+        if (entity && entity.type === 'resource' && (entity as ResourceEntity).uri === uri) {
+          return entity as ResourceEntity;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** 合并资源实体（用于去重更新） */
+  mergeResource(taskId: string, uri: string, newSummary: ResourceSummary, newRelations: Relation[]): ResourceEntity | null {
+    const existing = this.findByUri(taskId, uri);
+    if (!existing) return null;
+
+    // 更新版本（数字版本递增）
+    const versionNum = parseInt(existing.version.replace('v', '')) + 1;
+    existing.version = `v${versionNum}`;
+
+    // 累加关系
+    existing.relations.push(...newRelations);
+
+    // 更新摘要
+    existing.summary = newSummary;
+
+    // 保存
+    const fileName = existing.id.replace(':', '-');
+    const entityPath = join(this.getTaskDir(taskId), 'entities', `${fileName}.json`);
+    try {
+      writeFileSync(entityPath, JSON.stringify(existing, null, 2), 'utf-8');
+    } catch (err) {
+      debugError(NS, 'Failed to merge resource', err);
+      throw err;
+    }
+
+    debug(NS, LogLevel.BASIC, 'Resource merged', { id: existing.id, uri, version: existing.version });
+    return existing;
+  }
+
+  /** 更新实体（用于状态变更等） */
+  updateEntity(taskId: string, id: string, updates: Partial<BaseEntity>): BaseEntity | null {
+    const entity = this.getEntity(taskId, id);
+    if (!entity) return null;
+
+    const updated = { ...entity, ...updates };
+
+    // 写回
+    const fileName = id.replace(':', '-');
+    const entityPath = join(this.getTaskDir(taskId), 'entities', `${fileName}.json`);
+    try {
+      writeFileSync(entityPath, JSON.stringify(updated, null, 2), 'utf-8');
+    } catch (err) {
+      debugError(NS, 'Failed to update entity', err);
+      throw err;
+    }
+
+    return updated;
+  }
+
+  // === 实体内部方法 ===
+
+  private getTypePrefix(type: EntityType): string {
+    const prefixes: Record<EntityType, string> = {
+      user_request: 'u',
+      task: 't',
+      decision: 'd',
+      resource: 'r',
+      constraint: 'c',
+      event: 'e'
+    };
+    return prefixes[type];
+  }
+
+  private getVersionStrategy(type: EntityType): string {
+    // 数字版本：user_request, task, resource
+    // 时间版本：decision, constraint, event
+    const numericTypes = ['user_request', 'task', 'resource'];
+    if (numericTypes.includes(type)) {
+      return 'v1';
+    }
+    return new Date().toISOString();
+  }
+
+  private getNextEntityOrder(taskId: string): number {
+    // 从索引文件读取计数器
+    const counterPath = join(this.getTaskDir(taskId), 'entity-counter.json');
+    try {
+      if (existsSync(counterPath)) {
+        const raw = readFileSync(counterPath, 'utf-8');
+        const data = JSON.parse(raw);
+        this.entityOrderCounter = data.counter || 0;
+      }
+    } catch {
+      this.entityOrderCounter = 0;
+    }
+
+    this.entityOrderCounter++;
+    this.saveEntityOrderCounter(taskId, this.entityOrderCounter);
+    return this.entityOrderCounter;
+  }
+
+  private saveEntityOrderCounter(taskId: string, counter: number): void {
+    try {
+      const taskDir = this.getTaskDir(taskId);
+      if (!existsSync(taskDir)) {
+        mkdirSync(taskDir, { recursive: true });
+      }
+      writeFileSync(join(taskDir, 'entity-counter.json'), JSON.stringify({ counter }), 'utf-8');
+    } catch (err) {
+      debugError(NS, 'Failed to save entity counter', err);
+    }
+  }
+
+  private loadEntityIndex(taskId: string): EntityIndexEntry[] {
+    if (this.entityIndexCache.has(taskId)) return this.entityIndexCache.get(taskId)!;
+    try {
+      const indexPath = join(this.getTaskDir(taskId), 'entity-index.json');
+      if (!existsSync(indexPath)) return [];
+      const raw = readFileSync(indexPath, 'utf-8');
+      const index = JSON.parse(raw);
+      this.entityIndexCache.set(taskId, index);
+      return index;
+    } catch {
+      return [];
+    }
+  }
+
+  private saveEntityIndex(taskId: string, index: EntityIndexEntry[]): void {
+    try {
+      const taskDir = this.getTaskDir(taskId);
+      if (!existsSync(taskDir)) {
+        mkdirSync(taskDir, { recursive: true });
+      }
+      writeFileSync(join(taskDir, 'entity-index.json'), JSON.stringify(index, null, 2), 'utf-8');
+      this.entityIndexCache.set(taskId, index);
+    } catch (err) {
+      debugError(NS, 'Failed to save entity index', err);
     }
   }
 }
