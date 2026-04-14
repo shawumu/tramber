@@ -347,12 +347,13 @@ export class MemoryStore {
 
   /** 存储实体 */
   storeEntity(taskId: string, entity: Omit<BaseEntity, 'id' | 'order' | 'createdAt'>): BaseEntity {
-    // 生成类型前缀 ID：类型前缀:5位短ID
-    // 结果格式：u:a3x7f, t:mnwsh, e:k4udw 等
+    // 生成唯一 ID：类型前缀 + 时间戳36进制 + 随机后缀（避免毫秒级碰撞）
+    // 结果格式：u:mnwsh3ju-tevi5, t:mnwsh3jx-97rre, e:mnwsh3k4-1udwi
     const prefix = this.getTypePrefix(entity.type);
     const rawId = generateId(prefix); // 返回 "u-mnwsh3ju-tevi5yf"
-    const shortId = rawId.split('-')[1]?.slice(0, 5) || rawId.slice(0, 5);
-    const id = `${prefix}:${shortId}`;
+    // 使用完整的后半部分（时间戳+随机），避免截断导致碰撞
+    const uniquePart = rawId.split('-').slice(1).join('-') || rawId;
+    const id = `${prefix}:${uniquePart}`;
 
     // 获取并递增 order
     const order = this.getNextEntityOrder(taskId);

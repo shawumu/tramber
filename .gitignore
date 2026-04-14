@@ -29,6 +29,7 @@ npm-debug.log*
 pnpm-debug.log*
 
 # Tramber
+.tramber
 .tramber/*.db
 .tramber/*.log
 .tramber/experiences/*.json
