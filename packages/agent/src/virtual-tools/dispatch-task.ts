@@ -10,7 +10,7 @@
 
 import type { Tool, ToolResult } from '@tramber/tool';
 import type { VirtualToolContext } from './index.js';
-import type { ExecutionContext } from '@tramber/shared';
+import type { ExecutionContext, RelationType } from '@tramber/shared';
 import { buildExecutionPrompt } from '../consciousness-prompts.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import { createConversation, addMessage } from '../conversation.js';
@@ -131,18 +131,69 @@ export class DispatchTaskTool implements Tool {
       // 6. Stage 9: 组装执行纲领（从实体图谱）
       const taskId = consciousnessManager.getTaskId();
       let execContext: ExecutionContext | undefined;
+      let currentSubtaskId: string | undefined;
+
       if (taskId) {
         execContext = consciousnessManager.assembleExecutionContext(taskId, params.domain);
+
+        // 6.1 创建 subtask 实体（pending 状态）
+        const memoryStore = consciousnessManager.getMemoryStore();
+
+        // 查找活跃 domain_task
+        const domainTasks = memoryStore.queryEntities({ taskId, type: 'domain_task', domain: params.domain });
+        let domainTaskEntity = domainTasks.find(dt => (dt as any).status === 'active');
+
+        if (!domainTaskEntity) {
+          // 没有活跃的 domain_task → 创建新的
+          const now = new Date().toISOString();
+          domainTaskEntity = memoryStore.storeEntity(taskId, {
+            type: 'domain_task',
+            domain: params.domain,
+            content: params.taskDescription,
+            title: params.taskDescription,
+            status: 'active',
+            subtaskIds: [],
+            startedAt: now,
+            updatedAt: now,
+            summary: '',
+            relations: []
+          });
+        }
+
+        // 创建 subtask（pending）
+        const subtaskEntity = memoryStore.storeEntity(taskId, {
+          type: 'subtask',
+          domain: params.domain,
+          content: params.taskDescription,
+          domainTaskId: domainTaskEntity.id,
+          description: params.taskDescription,
+          status: 'pending',
+          analysisIds: [],
+          ruleIds: [],
+          resourceIds: [],
+          requires: [],
+          relations: [{ type: 'contains' as RelationType, target: domainTaskEntity.id }]
+        });
+        currentSubtaskId = subtaskEntity.id;
+
+        // 更新 domain_task 的 subtaskIds
+        const existingSubtaskIds = (domainTaskEntity as any).subtaskIds || [];
+        memoryStore.updateEntity(taskId, domainTaskEntity.id, {
+          subtaskIds: [...existingSubtaskIds, subtaskEntity.id]
+        });
+
         debug(NS, LogLevel.BASIC, 'Execution context assembled', {
           domain: params.domain,
+          domainTaskId: domainTaskEntity.id,
+          subtaskId: currentSubtaskId,
           纲领长度: execContext.纲领.length,
           资源数: execContext.资源索引.length
         });
       }
 
-      // 7. 构建子意识 system prompt（注入执行纲领）
+      // 7. 构建子意识 system prompt（注入执行纲领 + 当前 subtask ID）
       const basePrompt = childLoop.buildSystemPrompt();
-      const execPrompt = buildExecutionPrompt(basePrompt, execState, undefined, execContext);
+      const execPrompt = buildExecutionPrompt(basePrompt, execState, undefined, execContext, currentSubtaskId);
 
       // 8. 创建/复用子意识 conversation
       const conversation = createConversation({
@@ -167,6 +218,15 @@ export class DispatchTaskTool implements Tool {
         execState.id,
         result.success ? 'active' : 'failed'
       );
+
+      // 11.1 更新 subtask 状态为 completed
+      if (taskId && currentSubtaskId) {
+        const memoryStore = consciousnessManager.getMemoryStore();
+        memoryStore.updateEntity(taskId, currentSubtaskId, {
+          status: result.success ? 'completed' : 'blocked',
+          result: result.success ? '执行成功' : result.error
+        });
+      }
 
       // 12. 压缩结果，记入 memory
       consciousnessManager.updateStatus('root', 'compressing');

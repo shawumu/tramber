@@ -1,12 +1,11 @@
 // packages/agent/src/virtual-tools/record-discovery.ts
 /**
- * record_discovery — 执行意识的发现记录工具
+ * record_discovery — 执行意识的发现记录工具（Stage 9 重构）
  *
- * 执行意识每轮执行返回时调用，记录发现和资源：
+ * 执行意识每轮执行返回时调用，记录发现的资源：
  * - [r:xxx] 资源实体（带结构化 summary）
- * - [e:xxx] 进度事件
  *
- * 支持资源去重：同一 uri 合并到同一实体，version 递增
+ * 支持资源去重：同一 uri 合并到同一实体，version 递增，relations 去重
  */
 
 import type { Tool, ToolResult } from '@tramber/tool';
@@ -31,7 +30,7 @@ export class RecordDiscoveryTool implements Tool {
   inputSchema = {
     type: 'object' as const,
     properties: {
-      taskRef: { type: 'string', description: '关联任务 ID（如 t:a3x7f）' },
+      subtaskRef: { type: 'string', description: '关联子任务 ID（如 s:xxx）' },
       resources: {
         type: 'array',
         items: {
@@ -43,11 +42,9 @@ export class RecordDiscoveryTool implements Tool {
           }
         },
         description: '本轮读取/发现的资源'
-      },
-      discoveries: { type: 'array', items: { type: 'string', description: '发现内容' }, description: '本轮发现' },
-      progress: { type: 'number', description: '进度 0-100' }
+      }
     },
-    required: ['taskRef']
+    required: ['subtaskRef']
   };
 
   private context: VirtualToolContext;
@@ -58,14 +55,16 @@ export class RecordDiscoveryTool implements Tool {
 
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
-      taskRef: string;
+      subtaskRef: string;
       resources?: ResourceInput[];
-      discoveries?: string[];
-      progress?: number;
+      // 兼容旧参数名
+      taskRef?: string;
     };
 
-    if (!params.taskRef) {
-      return { success: false, error: 'taskRef is required' };
+    // 兼容旧参数名
+    const subtaskRef = params.subtaskRef || params.taskRef;
+    if (!subtaskRef) {
+      return { success: false, error: 'subtaskRef is required' };
     }
 
     const { consciousnessManager } = this.context;
@@ -79,18 +78,19 @@ export class RecordDiscoveryTool implements Tool {
       const memoryStore = consciousnessManager.getMemoryStore();
       const entities: string[] = [];
 
-      // 1. 处理资源（去重合并）
+      // 处理资源（去重合并）
       if (params.resources && params.resources.length > 0) {
         for (const resource of params.resources) {
+          // Stage 9 重构：使用正确的语义
+          // 资源由子任务产出，使用 produced_by 表示反向关系
           const relations: Relation[] = [
-            { type: 'produced_by' as RelationType, target: params.taskRef },
-            { type: 'discovered_in' as RelationType, target: params.taskRef }
+            { type: 'produced_by' as RelationType, target: subtaskRef }
           ];
 
           // 检查 uri 是否已存在
           const existing = memoryStore.findByUri(taskId, resource.uri);
           if (existing) {
-            // 合并：version 递增，relations 累加
+            // 合并：version 递增，relations 去重合并
             const merged = memoryStore.mergeResource(
               taskId,
               resource.uri,
@@ -99,6 +99,17 @@ export class RecordDiscoveryTool implements Tool {
             );
             if (merged) {
               entities.push(merged.id);
+
+              // 更新 subtask 的 resourceIds（关键修复）
+              const subtask = memoryStore.getEntity(taskId, subtaskRef);
+              if (subtask && subtask.type === 'subtask') {
+                const existingResourceIds = (subtask as any).resourceIds || [];
+                if (!existingResourceIds.includes(merged.id)) {
+                  memoryStore.updateEntity(taskId, subtaskRef, {
+                    resourceIds: [...existingResourceIds, merged.id]
+                  });
+                }
+              }
             }
           } else {
             // 创建新资源实体
@@ -112,49 +123,30 @@ export class RecordDiscoveryTool implements Tool {
               summary: resource.summary || { type: 'unknown' }
             }) as ResourceEntity;
             entities.push(resourceEntity.id);
+
+            // 更新 subtask 的 resourceIds（关键修复）
+            const subtask = memoryStore.getEntity(taskId, subtaskRef);
+            if (subtask && subtask.type === 'subtask') {
+              const existingResourceIds = (subtask as any).resourceIds || [];
+              memoryStore.updateEntity(taskId, subtaskRef, {
+                resourceIds: [...existingResourceIds, resourceEntity.id]
+              });
+            }
           }
         }
       }
 
-      // 2. 记录发现
-      if (params.discoveries && params.discoveries.length > 0) {
-        for (const discovery of params.discoveries) {
-          const eventEntity = memoryStore.storeEntity(taskId, {
-            type: 'event',
-            domain: 'execution',
-            content: discovery,
-            relations: [
-              { type: 'discovered_in' as RelationType, target: params.taskRef }
-            ]
-          });
-          entities.push(eventEntity.id);
-        }
-      }
-
-      // 3. 生成进度事件
-      if (params.progress !== undefined) {
-        const progressEntity = memoryStore.storeEntity(taskId, {
-          type: 'event',
-          domain: 'execution',
-          content: `进度: ${params.progress}%`,
-          relations: [
-            { type: 'triggers' as RelationType, target: params.taskRef }
-          ]
-        });
-        entities.push(progressEntity.id);
-      }
-
       debug(NS, LogLevel.BASIC, 'Discovery recorded', {
         entities,
-        taskRef: params.taskRef,
-        progress: params.progress
+        subtaskRef,
+        resourceCount: params.resources?.length || 0
       });
 
       return {
         success: true,
         data: {
           entities,
-          taskRef: params.taskRef
+          subtaskRef
         }
       };
     } catch (err) {

@@ -1,15 +1,17 @@
 // packages/agent/src/virtual-tools/spawn-sub-task.ts
 /**
- * spawn_sub_task — 派生执行意识处理子任务
+ * spawn_sub_task — 派生执行意识处理子任务（Stage 9 重构）
  *
  * 核心虚拟工具：父意识通过此工具创建子意识，同步执行后返回压缩结果。
+ * 使用 createDomainChild 替代过时的 spawnChild。
  */
 
 import type { Tool, ToolResult } from '@tramber/tool';
 import type { VirtualToolContext } from './index.js';
+import type { ExecutionContext } from '@tramber/shared';
 import { buildExecutionPrompt } from '../consciousness-prompts.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
-import { createConversation, addMessage } from '../conversation.js';
+import { createConversation } from '../conversation.js';
 import type { Task } from '@tramber/shared';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
@@ -24,25 +26,29 @@ export class SpawnSubTaskTool implements Tool {
     type: 'object' as const,
     properties: {
       taskDescription: {
-        type: 'string',
+        type: 'string' as const,
         description: '清晰具体的子任务描述'
       },
+      domain: {
+        type: 'string' as const,
+        description: '所属领域（默认"执行"）'
+      },
       constraints: {
-        type: 'array',
+        type: 'array' as const,
         description: '子任务必须遵守的约束条件',
-        items: { type: 'string', description: '约束条件' }
+        items: { type: 'string' as const, description: '约束条件' }
       },
       contextForChild: {
-        type: 'string',
+        type: 'string' as const,
         description: '传递给执行意识的关键上下文（精要，非完整历史）'
       },
       allowedTools: {
-        type: 'array',
+        type: 'array' as const,
         description: '允许执行意识使用的工具列表',
-        items: { type: 'string', description: '工具 ID' }
+        items: { type: 'string' as const, description: '工具 ID' }
       },
       maxIterations: {
-        type: 'number',
+        type: 'number' as const,
         description: '最大迭代次数（默认 10）'
       }
     },
@@ -58,6 +64,7 @@ export class SpawnSubTaskTool implements Tool {
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
       taskDescription: string;
+      domain?: string;
       constraints?: string[];
       contextForChild?: string;
       allowedTools?: string[];
@@ -69,11 +76,13 @@ export class SpawnSubTaskTool implements Tool {
     }
 
     const { consciousnessManager, createLoop } = this.context;
+    const domain = params.domain || 'execution';
 
     try {
-      // 1. 创建执行意识状态
-      const execState = consciousnessManager.spawnChild(
-        this.context.currentConsciousnessId,
+      // 1. 创建执行意识状态（使用 createDomainChild）
+      const execState = consciousnessManager.createDomainChild(
+        domain,
+        params.taskDescription,
         params.taskDescription,
         {
           constraints: params.constraints,
@@ -85,6 +94,7 @@ export class SpawnSubTaskTool implements Tool {
 
       debug(NS, LogLevel.BASIC, 'Spawning execution consciousness', {
         id: execState.id,
+        domain,
         task: params.taskDescription.slice(0, 80)
       });
 
@@ -94,17 +104,24 @@ export class SpawnSubTaskTool implements Tool {
         maxIterations: params.maxIterations ?? 10
       });
 
-      // 3. 构建子意识的 system prompt
-      const basePrompt = childLoop.buildSystemPrompt();
-      const execPrompt = buildExecutionPrompt(basePrompt, execState);
+      // 3. Stage 9: 组装执行纲领（如果有 taskId）
+      const taskId = consciousnessManager.getTaskId();
+      let execContext: ExecutionContext | undefined;
+      if (taskId) {
+        execContext = consciousnessManager.assembleExecutionContext(taskId, domain);
+      }
 
-      // 4. 创建子意识的 conversation
+      // 4. 构建子意识的 system prompt
+      const basePrompt = childLoop.buildSystemPrompt();
+      const execPrompt = buildExecutionPrompt(basePrompt, execState, undefined, execContext);
+
+      // 5. 创建子意识的 conversation
       const conversation = createConversation({
         systemPrompt: execPrompt,
         projectInfo: { rootPath: process.cwd(), name: 'project' }
       });
 
-      // 5. 创建子任务
+      // 6. 创建子任务
       const task: Task = {
         id: execState.id,
         description: params.taskDescription,
@@ -112,18 +129,21 @@ export class SpawnSubTaskTool implements Tool {
         isComplete: false
       };
 
-      // 6. 同步执行子 loop
+      // 7. 同步执行子 loop
       consciousnessManager.updateStatus(execState.id, 'thinking');
       const result = await childLoop.execute(task, conversation);
 
-      // 7. 更新状态
+      // 8. 更新状态
       consciousnessManager.updateStatus(
         execState.id,
         result.success ? 'completed' : 'failed'
       );
 
-      // 8. 压缩结果
-      consciousnessManager.updateStatus(this.context.currentConsciousnessId, 'compressing');
+      // 9. 压缩结果
+      const parentId = this.context.currentConsciousnessId;
+      if (parentId) {
+        consciousnessManager.updateStatus(parentId, 'compressing');
+      }
       const fullMessages: Array<{ role: string; content: string }> = [
         { role: 'system', content: conversation.systemPrompt },
         ...conversation.messages.map(m => ({ role: m.role, content: m.content }))
@@ -133,7 +153,7 @@ export class SpawnSubTaskTool implements Tool {
         {
           consciousnessId: execState.id,
           success: result.success,
-          finalAnswer: result.finalAnswer,
+          finalAnswer: result.success ? result.finalAnswer : '',
           filesTouched: [],
           tokenUsage: result.conversation.tokenUsage,
           iterations: result.iterations,
@@ -141,7 +161,9 @@ export class SpawnSubTaskTool implements Tool {
         },
         fullMessages
       );
-      consciousnessManager.updateStatus(this.context.currentConsciousnessId, 'thinking');
+      if (parentId) {
+        consciousnessManager.updateStatus(parentId, 'thinking');
+      }
 
       debug(NS, LogLevel.BASIC, 'Execution consciousness completed', {
         id: execState.id,

@@ -438,6 +438,95 @@ ${resources.map(r => `- [${r.id}] ${r.uri}`).join('\n') || '无'}
 }
 ```
 
+## 6.1 关系去重修复（P3）
+
+当前 `mergeResource` 方法在合并资源时直接 `push` 新关系，导致同一 `(type, target)` 组合重复写入。
+
+### 问题示例
+
+```json
+"relations": [
+  { "type": "produced_by", "target": "t:mnxbf" },
+  { "type": "discovered_in", "target": "t:mnxbf" },
+  { "type": "produced_by", "target": "t:mnxbf" },
+  { "type": "discovered_in", "target": "t:mnxbf" },
+  { "type": "produced_by", "target": "t:mnxbf" },
+  { "type": "discovered_in", "target": "t:mnxbf" }
+]
+```
+
+### 修复方案
+
+新增 `mergeRelation` 方法，写入关系前做去重检查：
+
+```typescript
+// packages/agent/src/memory-store.ts
+
+/**
+ * 合并关系（去重）
+ * 确保 (type, target) 组合唯一
+ */
+mergeRelations(existing: Relation[], newRelations: Relation[]): Relation[] {
+  // 构建 existing 的唯一 key 集合
+  const existingKeys = new Set(
+    existing.map(r => `${r.type}:${r.target}`)
+  );
+
+  // 只添加不存在的关系
+  const dedupedNew = newRelations.filter(r => {
+    const key = `${r.type}:${r.target}`;
+    if (existingKeys.has(key)) {
+      debug(NS, LogLevel.BASIC, 'Relation deduplicated', { type: r.type, target: r.target });
+      return false;
+    }
+    existingKeys.add(key); // 添加到集合，防止 newRelations 内部重复
+    return true;
+  });
+
+  return [...existing, ...dedupedNew];
+}
+```
+
+### 修改 mergeResource
+
+```typescript
+mergeResource(taskId: string, uri: string, newSummary: ResourceSummary, newRelations: Relation[]): ResourceEntity | null {
+  const existing = this.findByUri(taskId, uri);
+  if (!existing) return null;
+
+  // 更新版本（数字版本递增）
+  const versionNum = parseInt(existing.version.replace('v', '')) + 1;
+  existing.version = `v${versionNum}`;
+
+  // 【关键修改】使用去重方法合并关系
+  existing.relations = this.mergeRelations(existing.relations, newRelations);
+
+  // 更新摘要
+  existing.summary = newSummary;
+
+  // ... 保存逻辑不变 ...
+}
+```
+
+### 修改 updateEntity
+
+同样需要在 `updateEntity` 中处理可能的重复关系：
+
+```typescript
+updateEntity(taskId: string, id: string, updates: Partial<BaseEntity>): BaseEntity | null {
+  const entity = this.getEntity(taskId, id);
+  if (!entity) return null;
+
+  // 如果更新包含 relations，需要去重
+  if (updates.relations) {
+    updates.relations = this.mergeRelations(entity.relations, updates.relations);
+  }
+
+  const updated = { ...entity, ...updates };
+  // ... 保存逻辑不变 ...
+}
+```
+
 ## 7. 实施步骤
 
 ### Phase 1: 类型定义重构（0.5 天）
@@ -460,6 +549,8 @@ ${resources.map(r => `- [${r.id}] ${r.uri}`).join('\n') || '无'}
 | 新增 queryByDomainTask 方法 | 同上 |
 | 修改 getTypePrefix（dt/s/a/r） | 同上 |
 | 删除 event 相关存储逻辑 | 同上 |
+| **新增 mergeRelation 去重方法** | 同上 |
+| **修改 mergeResource 使用去重逻辑** | 同上 |
 
 ### Phase 3: analyze_turn 重构（1 天）
 
@@ -502,6 +593,7 @@ ${resources.map(r => `- [${r.id}] ${r.uri}`).join('\n') || '无'}
 | 跨轮依赖 | 第二轮 requires 链接到第一轮资源 |
 | Context 自组装 | 触发 rebuild_context，验证纲领质量 |
 | 规则继承 | 子任务继承全局规则 |
+| **关系去重** | 同一资源多次 record_discovery，relations 数组无重复 |
 
 ## 8. 文件变更清单
 
@@ -510,7 +602,7 @@ ${resources.map(r => `- [${r.id}] ${r.uri}`).join('\n') || '无'}
 | 文件 | 变更内容 |
 |------|---------|
 | `packages/shared/src/types/consciousness.ts` | EntityType、RelationType、实体类型定义重构 |
-| `packages/agent/src/memory-store.ts` | storeEntity 支持新类型、新增查询方法 |
+| `packages/agent/src/memory-store.ts` | storeEntity 支持新类型、新增查询方法、**mergeRelations 去重方法** |
 | `packages/agent/src/virtual-tools/analyze-turn.ts` | 参数 schema、执行逻辑重构 |
 | `packages/agent/src/consciousness-prompts.ts` | 守护意识提示词更新 |
 | `packages/agent/src/consciousness-manager.ts` | assembleExecutionContext 重构 |
@@ -532,4 +624,5 @@ ${resources.map(r => `- [${r.id}] ${r.uri}`).join('\n') || '无'}
 | 分析实体语义化 | analysis 记录实际分析内容而非决策描述 |
 | 规则分类 | user_rule 和 analysis_rule 区分来源，便于继承 |
 | 数据去冗余 | 删除 event，减少存储和索引负担 |
+| **关系无重复** | mergeRelations 确保 (type, target) 组合唯一，避免冗余 |
 | Context 恒定质量 | 从任务图谱自组装，无压缩失真 |

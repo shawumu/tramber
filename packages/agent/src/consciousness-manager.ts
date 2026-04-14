@@ -19,7 +19,10 @@ import type {
   ApprovalResponse,
   BaseEntity,
   ResourceEntity,
-  TaskEntity,
+  DomainTaskEntity,
+  SubtaskEntity,
+  AnalysisEntity,
+  RuleEntity,
   ExecutionContext
 } from '@tramber/shared';
 import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
@@ -475,7 +478,7 @@ export class ConsciousnessManager {
   }
 
   /**
-   * 组装执行纲领 — 从实体图谱自动组装
+   * 组装执行纲领 — 从任务图谱自动组装（Stage 9 重构）
    *
    * 当执行意识收到任务时调用，查询关联实体，组装执行纲领。
    * 用于 dispatch_task 注入 system prompt 和 rebuild_context 重建。
@@ -485,63 +488,103 @@ export class ConsciousnessManager {
       return { 纲领: '', 资源索引: [], 最近对话: [] };
     }
 
-    // 1. 从 Memory 查询本领域的实体
-    const entities = this.memoryStore.queryEntities({ taskId, domain });
+    // 1. 查找本领域的活跃领域任务
+    const domainTasks = this.memoryStore.queryEntities({ taskId, type: 'domain_task', domain });
+    const activeDomainTask = domainTasks.find(dt => (dt as DomainTaskEntity).status === 'active') as DomainTaskEntity | undefined;
 
-    // 2. 查找当前任务实体（未完成的）
-    const currentTask = entities.find(e =>
-      e.type === 'task' && (e as TaskEntity).status !== 'completed'
-    ) as TaskEntity | undefined;
-
-    if (!currentTask) {
+    if (!activeDomainTask) {
       return { 纲领: '', 资源索引: [], 最近对话: [] };
     }
 
-    // 3. 查询关联实体（通过 relations）
-    const related: BaseEntity[] = [];
-    for (const rel of currentTask.relations) {
-      const entity = this.memoryStore.getEntity(taskId, rel.target);
-      if (entity) related.push(entity);
+    // 2. 查找关联的子任务（按 order 倒序）
+    const subtasks = activeDomainTask.subtaskIds
+      .map(id => this.memoryStore.getEntity(taskId, id))
+      .filter((e): e is BaseEntity => e !== null && e.type === 'subtask')
+      .reverse();  // 最近优先
+
+    // 3. 查找关联的分析和规则
+    const analyses: AnalysisEntity[] = [];
+    const rules: RuleEntity[] = [];
+    const resources: ResourceEntity[] = [];
+
+    for (const subtask of subtasks) {
+      const subtaskEntity = subtask as SubtaskEntity;
+
+      // 子任务的分析（通过 analysisIds）
+      for (const analysisId of subtaskEntity.analysisIds || []) {
+        const entity = this.memoryStore.getEntity(taskId, analysisId);
+        if (entity && entity.type === 'analysis') {
+          analyses.push(entity as AnalysisEntity);
+        }
+      }
+
+      // 子任务的规则（通过 ruleIds）
+      for (const ruleId of subtaskEntity.ruleIds || []) {
+        const entity = this.memoryStore.getEntity(taskId, ruleId);
+        if (entity && entity.type === 'rule') {
+          rules.push(entity as RuleEntity);
+        }
+      }
+
+      // 子任务依赖/产出的资源（通过 resourceIds + requires）
+      const allResourceIds = [...(subtaskEntity.resourceIds || []), ...(subtaskEntity.requires || [])];
+      for (const resourceId of allResourceIds) {
+        const entity = this.memoryStore.getEntity(taskId, resourceId);
+        if (entity && entity.type === 'resource') {
+          resources.push(entity as ResourceEntity);
+        }
+      }
     }
 
-    // 4. 查找发起此任务的用户需求
-    const userRequest = related.find(e => e.type === 'user_request');
+    // 3.1 反向查询：查找所有关联到当前 domain_task 的资源（兼容历史数据）
+    // 查询所有资源实体，检查其 relations 是否指向当前 domain_task 的任何 subtask
+    const allResources = this.memoryStore.queryEntities({ taskId, type: 'resource' });
+    const subtaskIdsSet = new Set(subtasks.map(s => s.id));
+    for (const resource of allResources) {
+      // 检查资源的 relations 是否有 produced_by 指向当前 subtask
+      const hasRelation = resource.relations.some(r =>
+        r.type === 'produced_by' && subtaskIdsSet.has(r.target)
+      );
+      // 如果有关系但还没在 resources 列表中，添加进去
+      if (hasRelation && !resources.some(r => r.id === resource.id)) {
+        resources.push(resource as ResourceEntity);
+      }
+    }
 
-    // 5. 组装执行纲领文本
+    // 4. 组装执行纲领
     const 纲领 = `
-## 执行纲领
-用户需求 [${userRequest?.id ?? '未知'}] ${userRequest?.content ?? '无'}
+## 领域任务：${activeDomainTask.title}
+状态：${activeDomainTask.status}
+进度摘要：${activeDomainTask.summary}
 
-当前任务 [${currentTask.id}] ${currentTask.content}
+## 已完成子任务
+${subtasks.filter(s => (s as SubtaskEntity).status === 'completed').map(s => `- [${s.id}] ${(s as SubtaskEntity).description}`).join('\n') || '无'}
 
-上游任务：${related.filter(e => e.type === 'task' && e.id !== currentTask.id).map(e => `[${e.id}] ${e.content}`).join('\n') || '无'}
+## 关键分析
+${analyses.map(a => `- [${a.id}] (${a.category}) ${a.content}`).join('\n') || '无'}
 
-技术决策：${related.filter(e => e.type === 'decision').map(e => `[${e.id}] ${e.content}`).join('\n') || '无'}
+## 适用规则
+${rules.filter(r => r.scope === 'global').map(r => `- [${r.id}] (${r.source}) ${r.content}`).join('\n') || '无'}
 
-关联资源：${related.filter(e => e.type === 'resource').map(e => {
-  const r = e as ResourceEntity;
-  return `[${e.id}] ${r.uri}`;
-}).join('\n') || '无'}
-
-约束条件：${entities.filter(e => e.type === 'constraint').map(e => `[${e.id}] ${e.content}`).join('\n') || '无'}
+## 可用资源
+${resources.map(r => `- [${r.id}] ${r.uri}`).join('\n') || '无'}
 `;
 
-    // 6. 资源索引（摘要列表）
-    const 资源索引 = related.filter(e => e.type === 'resource').map(e => {
-      const r = e as ResourceEntity;
-      return {
-        id: e.id,
-        uri: r.uri,
-        summary: r.summary
-      };
-    });
+    // 5. 资源索引
+    const 资源索引 = resources.map(r => ({
+      id: r.id,
+      uri: r.uri,
+      summary: r.summary
+    }));
 
     debug(NS, LogLevel.BASIC, 'Execution context assembled', {
       taskId,
       domain,
-      currentTaskId: currentTask.id,
-      relatedCount: related.length,
-      资源数: 资源索引.length
+      domainTaskId: activeDomainTask.id,
+      subtaskCount: subtasks.length,
+      analysisCount: analyses.length,
+      ruleCount: rules.length,
+      resourceCount: resources.length
     });
 
     return { 纲领, 资源索引, 最近对话: [] };

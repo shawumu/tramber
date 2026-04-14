@@ -1,42 +1,78 @@
 // packages/agent/src/virtual-tools/analyze-turn.ts
 /**
- * analyze_turn — 守护意识的分析总结工具
+ * analyze_turn — 守护意识的分析总结工具（Stage 9 重构）
  *
- * 守护意识在 dispatch_task 返回后调用此工具，生成结构化实体：
+ * 守护意识在 dispatch_task 返回后调用此工具：
  * - [u:xxx] 用户需求实体
- * - [t:xxx] 任务实体
- * - [d:xxx] 决策实体
- * - [c:xxx] 约束实体
- * - [e:xxx] 事件实体
+ * - [a:xxx] 分析实体（关联到已完成 subtask）
+ * - [rl:xxx] 规则实体
+ * - 更新 domain_task summary
  *
- * 替代原 compress_and_remember，实体写入实体图谱而非纯文本流水账。
+ * 注意：subtask 已由 dispatch_task 预创建，analyze_turn 不再创建 subtask。
  */
 
 import type { Tool, ToolResult } from '@tramber/tool';
 import type { VirtualToolContext } from './index.js';
-import type { Relation, RelationType } from '@tramber/shared';
+import type { RelationType, AnalysisEntity, RuleEntity, SubtaskEntity } from '@tramber/shared';
 import { debug, NAMESPACE, LogLevel } from '@tramber/shared';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
+/** analyze_turn 输入参数 */
+interface AnalyzeTurnInput {
+  userRequest: string;
+  domain: string;
+  summary: string;
+  // 分析（关联到最近完成的 subtask）
+  analyses?: Array<{
+    content: string;
+    category: 'discovery' | 'conclusion' | 'insight' | 'action_plan';
+  }>;
+  // 规则
+  rules?: Array<{
+    content: string;
+    source: 'user' | 'analysis';
+    scope: 'local' | 'global';
+  }>;
+}
+
 export class AnalyzeTurnTool implements Tool {
   id = 'analyze_turn';
   name = 'analyze_turn';
-  description = '分析本轮交互，生成用户需求、任务、决策、约束实体。dispatch_task 返回后必须调用。你在下一条消息中输出简短的分析总结（一行）。';
+  description = '分析本轮交互，更新领域任务图谱。dispatch_task 返回后必须调用。你在下一条消息中输出简短的分析总结（一行）。';
   category = 'execution' as const;
   permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {
-      userRequest: { type: 'string', description: '用户本轮原始输入' },
-      domain: { type: 'string', description: '所属领域' },
-      task: { type: 'string', description: '任务描述' },
-      taskStatus: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'blocked'], description: '任务状态' },
-      decisions: { type: 'array', items: { type: 'string' }, description: '本轮做出的决策' },
-      constraints: { type: 'array', items: { type: 'string' }, description: '用户提出的约束' },
-      summary: { type: 'string', description: '本轮分析总结（一行）' }
+      userRequest: { type: 'string' as const, description: '用户本轮原始输入' },
+      domain: { type: 'string' as const, description: '所属领域' },
+      summary: { type: 'string' as const, description: '本轮分析总结（一行）' },
+      analyses: {
+        type: 'array' as const,
+        items: {
+          type: 'object' as const,
+          properties: {
+            content: { type: 'string' as const, description: '分析内容' },
+            category: { type: 'string' as const, enum: ['discovery', 'conclusion', 'insight', 'action_plan'], description: '分析类型' }
+          }
+        },
+        description: '本轮分析结论'
+      },
+      rules: {
+        type: 'array' as const,
+        items: {
+          type: 'object' as const,
+          properties: {
+            content: { type: 'string' as const, description: '规则内容' },
+            source: { type: 'string' as const, enum: ['user', 'analysis'], description: '规则来源' },
+            scope: { type: 'string' as const, enum: ['local', 'global'], description: '作用范围' }
+          }
+        },
+        description: '本轮发现的规则'
+      }
     },
-    required: ['userRequest', 'domain', 'task', 'summary']
+    required: ['userRequest', 'domain', 'summary']
   };
 
   private context: VirtualToolContext;
@@ -46,18 +82,10 @@ export class AnalyzeTurnTool implements Tool {
   }
 
   async execute(input: unknown): Promise<ToolResult> {
-    const params = input as {
-      userRequest: string;
-      domain: string;
-      task: string;
-      taskStatus?: 'pending' | 'in_progress' | 'completed' | 'blocked';
-      decisions?: string[];
-      constraints?: string[];
-      summary: string;
-    };
+    const params = input as AnalyzeTurnInput;
 
-    if (!params.userRequest || !params.domain || !params.task) {
-      return { success: false, error: 'userRequest, domain, and task are required' };
+    if (!params.userRequest || !params.domain || !params.summary) {
+      return { success: false, error: 'userRequest, domain, and summary are required' };
     }
 
     const { consciousnessManager } = this.context;
@@ -70,6 +98,7 @@ export class AnalyzeTurnTool implements Tool {
     try {
       const memoryStore = consciousnessManager.getMemoryStore();
       const entities: string[] = [];
+      const now = new Date().toISOString();
 
       // 1. 生成用户需求实体 [u:xxx]
       const userRequestEntity = memoryStore.storeEntity(taskId, {
@@ -80,62 +109,71 @@ export class AnalyzeTurnTool implements Tool {
       });
       entities.push(userRequestEntity.id);
 
-      // 2. 生成任务实体 [t:xxx]（关联用户需求）
-      const taskRelations: Relation[] = [
-        { type: 'initiates' as RelationType, target: userRequestEntity.id }
-      ];
-      const taskEntity = memoryStore.storeEntity(taskId, {
-        type: 'task',
-        domain: params.domain,
-        content: params.task,
-        relations: taskRelations
-      });
-      entities.push(taskEntity.id);
+      // 2. 更新 domain_task summary
+      const domainTasks = memoryStore.queryEntities({ taskId, type: 'domain_task', domain: params.domain });
+      const activeDomainTask = domainTasks.find(dt => (dt as any).status === 'active');
 
-      // 3. 为 decisions 每条生成决策实体 [d:xxx]
-      if (params.decisions && params.decisions.length > 0) {
-        for (const decision of params.decisions) {
-          const decisionEntity = memoryStore.storeEntity(taskId, {
-            type: 'decision',
+      if (activeDomainTask) {
+        memoryStore.updateEntity(taskId, activeDomainTask.id, {
+          updatedAt: now,
+          summary: params.summary
+        });
+      }
+
+      // 3. 查找最近完成的 subtask（用于关联 analysis/rule）
+      const subtasks = memoryStore.queryEntities({ taskId, type: 'subtask', domain: params.domain });
+      const recentSubtask = subtasks
+        .filter(s => (s as SubtaskEntity).status === 'completed')
+        .sort((a, b) => b.order - a.order)[0] as SubtaskEntity | undefined;
+
+      // 4. 生成分析实体 [a:xxx]
+      if (params.analyses && params.analyses.length > 0 && recentSubtask) {
+        for (const analysis of params.analyses) {
+          const analysisEntity = memoryStore.storeEntity(taskId, {
+            type: 'analysis',
             domain: params.domain,
-            content: decision,
-            relations: [
-              { type: 'triggers' as RelationType, target: taskEntity.id }
-            ]
+            content: analysis.content,
+            subtaskId: recentSubtask.id,
+            category: analysis.category,
+            relations: [{ type: 'analyzes' as RelationType, target: recentSubtask.id }]
+          }) as AnalysisEntity;
+          entities.push(analysisEntity.id);
+
+          // 更新 subtask 的 analysisIds
+          const existingAnalysisIds = recentSubtask.analysisIds || [];
+          memoryStore.updateEntity(taskId, recentSubtask.id, {
+            analysisIds: [...existingAnalysisIds, analysisEntity.id]
           });
-          entities.push(decisionEntity.id);
         }
       }
 
-      // 4. 为 constraints 每条生成约束实体 [c:xxx]
-      if (params.constraints && params.constraints.length > 0) {
-        for (const constraint of params.constraints) {
-          const constraintEntity = memoryStore.storeEntity(taskId, {
-            type: 'constraint',
+      // 5. 生成规则实体 [rl:xxx]
+      if (params.rules && params.rules.length > 0 && recentSubtask) {
+        for (const rule of params.rules) {
+          const ruleEntity = memoryStore.storeEntity(taskId, {
+            type: 'rule',
             domain: params.domain,
-            content: constraint,
-            relations: [
-              { type: 'blocked_by' as RelationType, target: taskEntity.id }
-            ]
+            content: rule.content,
+            subtaskId: recentSubtask.id,
+            source: rule.source,
+            scope: rule.scope,
+            relations: [{ type: 'constrained_by' as RelationType, target: recentSubtask.id }]
+          }) as RuleEntity;
+          entities.push(ruleEntity.id);
+
+          // 更新 subtask 的 ruleIds
+          const existingRuleIds = recentSubtask.ruleIds || [];
+          memoryStore.updateEntity(taskId, recentSubtask.id, {
+            ruleIds: [...existingRuleIds, ruleEntity.id]
           });
-          entities.push(constraintEntity.id);
         }
       }
-
-      // 5. 生成事件实体 [e:xxx]（领域交互）
-      const eventEntity = memoryStore.storeEntity(taskId, {
-        type: 'event',
-        domain: params.domain,
-        content: `领域 [${params.domain}] 执行任务: ${params.summary}`,
-        relations: [
-          { type: 'triggers' as RelationType, target: taskEntity.id }
-        ]
-      });
-      entities.push(eventEntity.id);
 
       debug(NS, LogLevel.BASIC, 'Analyze turn completed', {
         entities,
-        domain: params.domain
+        domain: params.domain,
+        domainTaskId: activeDomainTask?.id,
+        subtaskId: recentSubtask?.id
       });
 
       return {
@@ -143,8 +181,10 @@ export class AnalyzeTurnTool implements Tool {
         data: {
           entities,
           userRequestId: userRequestEntity.id,
-          taskId: taskEntity.id,
-          domain: params.domain
+          domainTaskId: activeDomainTask?.id,
+          subtaskId: recentSubtask?.id,
+          domain: params.domain,
+          summary: params.summary
         }
       };
     } catch (err) {

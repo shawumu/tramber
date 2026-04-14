@@ -248,25 +248,30 @@ export interface ApprovalResponse {
   modifiedParameters?: Record<string, unknown>;
 }
 
-// === 实体图谱（Stage 9） ===
+// === 实体图谱（Stage 9 重构） ===
 
 /** 实体类型 */
-export type EntityType = 'user_request' | 'task' | 'decision' | 'resource' | 'constraint' | 'event';
+export type EntityType =
+  | 'user_request'   // 用户需求起点
+  | 'domain_task'    // 领域任务（任务主题）
+  | 'subtask'        // 子任务
+  | 'analysis'       // 分析结论
+  | 'rule'           // 规则
+  | 'resource';      // 资源实体
 
 /** 资源子类型 */
 export type ResourceType = 'file' | 'knowledge' | 'api' | 'pattern';
 
 /** 关系类型 */
 export type RelationType =
-  | 'initiates'      // 用户需求发起任务
-  | 'produces'       // 任务产生资源
-  | 'triggers'       // 任务触发决策
-  | 'leads_to'       // 任务衍生新任务
-  | 'requires'       // 任务依赖资源
-  | 'blocked_by'     // 任务被约束阻塞
-  | 'discovered_in'  // 资源在任务中发现
-  | 'produced_by'    // 资源由任务产出
-  | 'required_by';   // 资源被任务依赖
+  | 'initiates'       // user_request → domain_task
+  | 'contains'        // domain_task → subtask
+  | 'analyzes'        // subtask → analysis
+  | 'constrained_by'  // subtask → rule
+  | 'requires'        // subtask → resource（跨轮依赖）
+  | 'produces'        // subtask → resource（本轮产出）
+  | 'produced_by'     // resource → subtask（反向：资源由子任务产出）
+  | 'leads_to';       // subtask → subtask（子任务衍生）
 
 /** 关系边 */
 export interface Relation {
@@ -294,32 +299,51 @@ export interface UserRequestEntity extends BaseEntity {
   turnNumber: number;      // 第几轮对话（1, 2, 3...）
 }
 
-/** 任务实体 */
-export interface TaskEntity extends BaseEntity {
-  type: 'task';
+/** 领域任务实体 — 聚合同一任务主题下的多个子任务 */
+export interface DomainTaskEntity extends BaseEntity {
+  type: 'domain_task';
+  title: string;            // 任务标题，如 "探索 demos 目录下的 3D 页面"
+  status: 'active' | 'completed' | 'paused';
+  subtaskIds: string[];     // 关联的子任务 ID 列表 [s:xxx, s:yyy]
+  startedAt: string;        // 任务开始时间
+  updatedAt: string;        // 最后更新时间
+  summary: string;          // 任务进度摘要（守护意识每轮更新）
+}
+
+/** 子任务实体 — 每轮执行的具体任务 */
+export interface SubtaskEntity extends BaseEntity {
+  type: 'subtask';
+  domainTaskId: string;     // 所属领域任务 [dt:xxx]
+  description: string;      // 本轮具体任务描述
   status: 'pending' | 'in_progress' | 'completed' | 'blocked';
-  taskDescription: string;
+  analysisIds: string[];    // 关联的分析 [a:xxx, a:yyy]
+  ruleIds: string[];        // 关联的规则 [r:xxx]
+  resourceIds: string[];    // 发现的资源 [r:xxx]
+  requires?: string[];      // 跨轮依赖的资源 ID（用于 context 自组装）
+  result?: string;          // 执行结果摘要
 }
 
-/** 决策实体 */
-export interface DecisionEntity extends BaseEntity {
-  type: 'decision';
-  decisionType: 'technical' | 'routing' | 'strategy';
-  rationale?: string;  // 决策理由
+/** 分析实体 — 记录本轮的分析结论 */
+export interface AnalysisEntity extends BaseEntity {
+  type: 'analysis';
+  subtaskId: string;        // 所属子任务 [s:xxx]
+  category: 'discovery' | 'conclusion' | 'insight' | 'action_plan';
+  // discovery: 发现了什么
+  // conclusion: 得出什么结论
+  // insight: 获得什么洞察
+  // action_plan: 后续行动计划
 }
 
-/** 约束实体 */
-export interface ConstraintEntity extends BaseEntity {
-  type: 'constraint';
-  constraintType: 'user_defined' | 'system' | 'domain';
-  active: boolean;  // 是否仍生效
-}
-
-/** 事件实体 */
-export interface EventEntity extends BaseEntity {
-  type: 'event';
-  eventType: 'domain_switch' | 'tool_call' | 'progress' | 'error' | 'milestone';
-  relatedTaskId?: string;
+/** 规则实体 — 分为用户规则和分析规则 */
+export interface RuleEntity extends BaseEntity {
+  type: 'rule';
+  subtaskId: string;        // 所属子任务 [s:xxx]
+  source: 'user' | 'analysis';  // 来源
+  // user: 用户明确提出的约束/规范
+  // analysis: 从分析中推导出的隐式规则
+  scope: 'local' | 'global';    // 作用范围
+  // local: 仅当前子任务适用
+  // global: 整个会话适用
 }
 
 /** 资源实体 */

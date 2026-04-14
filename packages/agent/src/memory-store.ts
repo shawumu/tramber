@@ -15,7 +15,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlink
 import { join } from 'path';
 import type {
   MemoryEntry, MemoryIndexEntry, MemoryQuery, MemoryType, OnlineMemory,
-  BaseEntity, EntityQuery, EntityType, ResourceEntity, ResourceSummary, Relation
+  BaseEntity, EntityQuery, EntityType, ResourceEntity, ResourceSummary, Relation,
+  DomainTaskEntity, SubtaskEntity, AnalysisEntity, RuleEntity
 } from '@tramber/shared';
 import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 
@@ -345,11 +346,11 @@ export class MemoryStore {
 
   // === 实体图谱方法（Stage 9） ===
 
-  /** 存储实体 */
-  storeEntity(taskId: string, entity: Omit<BaseEntity, 'id' | 'order' | 'createdAt'>): BaseEntity {
+  /** 存储实体（支持扩展字段） */
+  storeEntity(taskId: string, entity: Record<string, unknown> & { type: EntityType; domain: string; content: string; relations: Relation[] }): BaseEntity {
     // 生成唯一 ID：类型前缀 + 时间戳36进制 + 随机后缀（避免毫秒级碰撞）
-    // 结果格式：u:mnwsh3ju-tevi5, t:mnwsh3jx-97rre, e:mnwsh3k4-1udwi
-    const prefix = this.getTypePrefix(entity.type);
+    // 结果格式：u:mnwsh3ju-tevi5, dt:mnwsh3jx-97rre, s:mnwsh3k4-1udwi
+    const prefix = this.getTypePrefix(entity.type as EntityType);
     const rawId = generateId(prefix); // 返回 "u-mnwsh3ju-tevi5yf"
     // 使用完整的后半部分（时间戳+随机），避免截断导致碰撞
     const uniquePart = rawId.split('-').slice(1).join('-') || rawId;
@@ -359,15 +360,15 @@ export class MemoryStore {
     const order = this.getNextEntityOrder(taskId);
 
     // 根据类型决定版本策略
-    const version = this.getVersionStrategy(entity.type);
+    const version = this.getVersionStrategy(entity.type as EntityType);
 
     const fullEntity: BaseEntity = {
-      ...entity,
+      ...(entity as Record<string, unknown>),
       id,
       order,
       version,
       createdAt: new Date().toISOString()
-    };
+    } as BaseEntity;
 
     // 确保目录存在
     const taskDir = this.getTaskDir(taskId);
@@ -402,6 +403,30 @@ export class MemoryStore {
 
     debug(NS, LogLevel.BASIC, 'Entity stored', { id: fullEntity.id, type: fullEntity.type, domain: fullEntity.domain, taskId });
     return fullEntity;
+  }
+
+  /**
+   * 合并关系（去重）
+   * 确保 (type, target) 组合唯一
+   */
+  mergeRelations(existing: Relation[], newRelations: Relation[]): Relation[] {
+    // 构建 existing 的唯一 key 集合
+    const existingKeys = new Set(
+      existing.map(r => `${r.type}:${r.target}`)
+    );
+
+    // 只添加不存在的关系
+    const dedupedNew = newRelations.filter(r => {
+      const key = `${r.type}:${r.target}`;
+      if (existingKeys.has(key)) {
+        debug(NS, LogLevel.BASIC, 'Relation deduplicated', { type: r.type, target: r.target });
+        return false;
+      }
+      existingKeys.add(key); // 添加到集合，防止 newRelations 内部重复
+      return true;
+    });
+
+    return [...existing, ...dedupedNew];
   }
 
   /** 获取实体 */
@@ -455,6 +480,21 @@ export class MemoryStore {
     return this.queryEntities({ taskId, type });
   }
 
+  /** 按领域任务查询子任务 */
+  queryByDomainTask(taskId: string, domainTaskId: string): SubtaskEntity[] {
+    const index = this.loadEntityIndex(taskId);
+    const subtaskIds = index
+      .filter(entry => entry.type === 'subtask')
+      .map(entry => entry.id);
+
+    const subtasks = subtaskIds
+      .map(id => this.getEntity(taskId, id))
+      .filter((e): e is BaseEntity => e !== null && e.type === 'subtask')
+      .filter(e => (e as SubtaskEntity).domainTaskId === domainTaskId);
+
+    return subtasks as SubtaskEntity[];
+  }
+
   /** 查找资源实体（用于去重） */
   findByUri(taskId: string, uri: string): ResourceEntity | null {
     const index = this.loadEntityIndex(taskId);
@@ -478,8 +518,8 @@ export class MemoryStore {
     const versionNum = parseInt(existing.version.replace('v', '')) + 1;
     existing.version = `v${versionNum}`;
 
-    // 累加关系
-    existing.relations.push(...newRelations);
+    // 【关键修改】使用去重方法合并关系
+    existing.relations = this.mergeRelations(existing.relations, newRelations);
 
     // 更新摘要
     existing.summary = newSummary;
@@ -498,12 +538,17 @@ export class MemoryStore {
     return existing;
   }
 
-  /** 更新实体（用于状态变更等） */
-  updateEntity(taskId: string, id: string, updates: Partial<BaseEntity>): BaseEntity | null {
+  /** 更新实体（支持扩展字段） */
+  updateEntity(taskId: string, id: string, updates: Record<string, unknown>): BaseEntity | null {
     const entity = this.getEntity(taskId, id);
     if (!entity) return null;
 
-    const updated = { ...entity, ...updates };
+    // 如果更新包含 relations，需要去重
+    if (updates.relations && Array.isArray(updates.relations)) {
+      updates.relations = this.mergeRelations(entity.relations, updates.relations as Relation[]);
+    }
+
+    const updated = { ...entity, ...updates } as BaseEntity;
 
     // 写回
     const fileName = id.replace(':', '-');
@@ -523,19 +568,19 @@ export class MemoryStore {
   private getTypePrefix(type: EntityType): string {
     const prefixes: Record<EntityType, string> = {
       user_request: 'u',
-      task: 't',
-      decision: 'd',
-      resource: 'r',
-      constraint: 'c',
-      event: 'e'
+      domain_task: 'dt',
+      subtask: 's',
+      analysis: 'a',
+      rule: 'rl',
+      resource: 'r'
     };
     return prefixes[type];
   }
 
   private getVersionStrategy(type: EntityType): string {
-    // 数字版本：user_request, task, resource
-    // 时间版本：decision, constraint, event
-    const numericTypes = ['user_request', 'task', 'resource'];
+    // 数字版本：user_request, domain_task, subtask, resource
+    // 时间版本：analysis, rule
+    const numericTypes = ['user_request', 'domain_task', 'subtask', 'resource'];
     if (numericTypes.includes(type)) {
       return 'v1';
     }
