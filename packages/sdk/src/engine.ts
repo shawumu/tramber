@@ -524,19 +524,10 @@ export class TramberEngine {
 
         result.conversation.messages = cleanedMessages;
 
-        // 2.5 将本轮新增的分析总结写入 memory（只写最后一条，避免重复）
+        // 2.5 刷新守护意识 memoryIndex（从实体图谱组装，替代 memory entries）
         const rootState = cm.getRoot();
-        const activeDomain = rootState?.activeDomain ?? 'global';
-        const newSummary = cleanedMessages[cleanedMessages.length - 1];
-        if (newSummary && newSummary.role === 'assistant') {
-          cm.recordMemory({
-            sourceId: 'guardian',
-            domain: activeDomain,
-            type: 'result_summary',
-            summary: newSummary.content,
-            content: newSummary.content,
-            relatedFiles: []
-          });
+        if (rootState && this.currentTaskId) {
+          rootState.memoryIndex = cm.buildMemoryFromEntities(this.currentTaskId);
         }
 
         debug(NAMESPACE.SDK_CLIENT, LogLevel.BASIC, 'Guardian conversation cleaned', {

@@ -38,7 +38,6 @@ export function buildSelfAwarenessPrompt(
 4. 子意识的完整回复已直接展示给用户，你不需要转发
 5. dispatch_task 返回后，你必须调用 analyze_turn：
    - 生成/更新领域任务（domain_task）
-   - 生成子任务（subtask）
    - 记录分析结论（analysis）
    - 记录规则（rule）
 6. analyze_turn 调用完成后，你的回复就是一行分析总结，格式：
@@ -65,16 +64,18 @@ ${rulesSection}
 ## analyze_turn 参数填写
 - userRequest: 用户本轮原始输入（原文）
 - domain: 所属领域（你判断的领域，同领域自动合并到同一 domain_task）
-- subtaskDescription: 本轮具体任务描述
-- requires: 依赖的已有资源 ID（跨轮关联，如 ["r:xxx"]）
-- analyses: 本轮分析结论
-  - discovery: 发现了什么
-  - conclusion: 得出什么结论
-  - insight: 获得什么洞察
-  - action_plan: 后续行动计划
-- rules: 本轮发现的规则
-  - source: user（用户明确提出）或 analysis（从分析推导）
+- analyses: 本轮分析结论（⚠️ 只在发现**联系**时填写）
+  - discovery: 发现了组件/配置/规则之间的联系（如"X 和 Y 共享 Z 模块"）
+  - conclusion: 从联系中得出影响后续决策的结论（如"A 限制 B 的写法"）
+  - insight: 从联系中获得可复用的洞察（如"X 的算法可复用于 Y 场景"）
+  - action_plan: 基于联系推导出的后续行动计划
+  - ❌ 不要填：状态描述（"任务完成"）、事实列举（"目录有10个文件"）、废话（"等待用户"）
+  - 💡 大多数情况下 analyses 可以为空数组或不填
+- rules: 本轮发现的规则（⚠️ 只在用户**明确提出**约束时填写）
+  - source: user（用户明确说出的约束，如"不要删除文件"）或 analysis（极少：从联系推导出的强制规范）
   - scope: local（仅当前子任务）或 global（整个会话）
+  - ❌ 不要填：系统行为（"问候语应路由到活跃领域"）、事实描述（"文件可在浏览器打开"）、已在 resource 中的信息
+  - 💡 大多数情况下 rules 可以为空数组或不填
 - summary: 本轮分析总结（一行）
 
 ## 工具
@@ -148,6 +149,12 @@ ${state.parentContext || '（无额外上下文）'}
 - 每轮工具调用后，使用 record_discovery 记录发现的资源
   - **重要**：subtaskRef 必须使用当前子任务 ID（上面标注的）
   - 这确保资源正确关联到子任务，后续可从实体图谱组装 context
+  - **summary 质量要求**：必须包含文件结构概览，让后续意识无需读文件即可理解内容
+    - HTML/前端文件：必须包含 title、techStack、features、structure（代码段概览，如 importmap/script/css 结构）
+    - 配置文件：必须包含 title、purpose、keyFields（核心配置项及当前值）
+    - TypeScript/JS：必须包含 title、exports（导出列表）、dependencies（依赖列表）
+    - 目录扫描：必须包含 title、fileList（子文件/目录名称列表）
+    - 不要只写 features，要让后续意识能判断文件的内部组织
 
 ## 工具
 ${toolList}、report_status、request_approval、escalate、record_discovery、recall_resource、rebuild_context

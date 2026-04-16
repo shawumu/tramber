@@ -150,7 +150,7 @@ export class DispatchTaskTool implements Tool {
             type: 'domain_task',
             domain: params.domain,
             content: params.taskDescription,
-            title: params.taskDescription,
+            title: params.domainDescription ?? params.domain,
             status: 'active',
             subtaskIds: [],
             startedAt: now,
@@ -219,12 +219,12 @@ export class DispatchTaskTool implements Tool {
         result.success ? 'active' : 'failed'
       );
 
-      // 11.1 更新 subtask 状态为 completed
+      // 11.1 更新 subtask 状态（result 留空，由 analyze_turn 回填有意义的结果总结）
       if (taskId && currentSubtaskId) {
         const memoryStore = consciousnessManager.getMemoryStore();
         memoryStore.updateEntity(taskId, currentSubtaskId, {
           status: result.success ? 'completed' : 'blocked',
-          result: result.success ? '执行成功' : result.error
+          result: result.success ? '' : result.error
         });
       }
 

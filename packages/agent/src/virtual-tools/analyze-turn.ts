@@ -120,13 +120,21 @@ export class AnalyzeTurnTool implements Tool {
         });
       }
 
-      // 3. 查找最近完成的 subtask（用于关联 analysis/rule）
+      // 3. 查找最近完成的 subtask（用于回填 result + 关联 analysis/rule）
       const subtasks = memoryStore.queryEntities({ taskId, type: 'subtask', domain: params.domain });
       const recentSubtask = subtasks
-        .filter(s => (s as SubtaskEntity).status === 'completed')
+        .filter(s => (s as SubtaskEntity).status === 'completed' || (s as SubtaskEntity).status === 'blocked')
         .sort((a, b) => b.order - a.order)[0] as SubtaskEntity | undefined;
 
-      // 4. 生成分析实体 [a:xxx]
+      // 3.1 回填 subtask.result：用守护意识总结替换 "执行成功"
+      if (recentSubtask && params.summary) {
+        memoryStore.updateEntity(taskId, recentSubtask.id, {
+          result: params.summary
+        });
+      }
+
+      // 4. 生成分析实体 [a:xxx]（先收集 ID，最后一次性更新 subtask）
+      const newAnalysisIds: string[] = [];
       if (params.analyses && params.analyses.length > 0 && recentSubtask) {
         for (const analysis of params.analyses) {
           const analysisEntity = memoryStore.storeEntity(taskId, {
@@ -138,16 +146,18 @@ export class AnalyzeTurnTool implements Tool {
             relations: [{ type: 'analyzes' as RelationType, target: recentSubtask.id }]
           }) as AnalysisEntity;
           entities.push(analysisEntity.id);
-
-          // 更新 subtask 的 analysisIds
-          const existingAnalysisIds = recentSubtask.analysisIds || [];
-          memoryStore.updateEntity(taskId, recentSubtask.id, {
-            analysisIds: [...existingAnalysisIds, analysisEntity.id]
-          });
+          newAnalysisIds.push(analysisEntity.id);
         }
       }
+      if (newAnalysisIds.length > 0 && recentSubtask) {
+        const existingAnalysisIds = recentSubtask.analysisIds || [];
+        memoryStore.updateEntity(taskId, recentSubtask.id, {
+          analysisIds: [...existingAnalysisIds, ...newAnalysisIds]
+        });
+      }
 
-      // 5. 生成规则实体 [rl:xxx]
+      // 5. 生成规则实体 [rl:xxx]（先收集 ID，最后一次性更新 subtask）
+      const newRuleIds: string[] = [];
       if (params.rules && params.rules.length > 0 && recentSubtask) {
         for (const rule of params.rules) {
           const ruleEntity = memoryStore.storeEntity(taskId, {
@@ -160,13 +170,14 @@ export class AnalyzeTurnTool implements Tool {
             relations: [{ type: 'constrained_by' as RelationType, target: recentSubtask.id }]
           }) as RuleEntity;
           entities.push(ruleEntity.id);
-
-          // 更新 subtask 的 ruleIds
-          const existingRuleIds = recentSubtask.ruleIds || [];
-          memoryStore.updateEntity(taskId, recentSubtask.id, {
-            ruleIds: [...existingRuleIds, ruleEntity.id]
-          });
+          newRuleIds.push(ruleEntity.id);
         }
+      }
+      if (newRuleIds.length > 0 && recentSubtask) {
+        const existingRuleIds = recentSubtask.ruleIds || [];
+        memoryStore.updateEntity(taskId, recentSubtask.id, {
+          ruleIds: [...existingRuleIds, ...newRuleIds]
+        });
       }
 
       debug(NS, LogLevel.BASIC, 'Analyze turn completed', {
