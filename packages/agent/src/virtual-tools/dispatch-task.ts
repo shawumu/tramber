@@ -253,12 +253,23 @@ export class DispatchTaskTool implements Tool {
       // 不再通过 onChildStep 重复发送
 
       // 14. 返回结果给守护意识（守护意识 LLM 调用 analyze_turn 写分析总结）
+      // 包含实际执行内容，避免守护意识因信息缺失而产生幻觉
+      const childFinalAnswer = result.success ? (result as any).finalAnswer || '' : '';
+      const toolCallSummary = result.success
+        ? (result as any).steps
+            ?.filter((s: any) => s.toolCall)
+            .map((s: any) => `${s.toolCall.name}(${JSON.stringify(s.toolCall.parameters).slice(0, 100)})`)
+            .join('\n') || ''
+        : '';
+
       return {
         success: result.success,
         data: {
           domain: params.domain,
           taskDescription: params.taskDescription,
           iterations: result.iterations,
+          finalAnswer: childFinalAnswer,
+          toolCallSummary,
           error: result.success ? undefined : result.error
         }
       };

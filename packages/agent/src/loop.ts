@@ -151,6 +151,10 @@ export class AgentLoop {
         : null
     });
 
+    // 守护意识工具约束状态
+    let guardianAllowedTools: string[] | null = null; // null = 不限制
+    const isGuardian = this.options.consciousnessState?.level === 'self_awareness';
+
     for (let i = startIteration; i < this.options.maxIterations; i++) {
       context.iterations = i + 1;
 
@@ -159,10 +163,10 @@ export class AgentLoop {
       // Phase 1: Gather Context
       await this.gatherContext(context);
 
-      // Phase 2: 调用 LLM
+      // Phase 2: 调用 LLM（守护意识模式下传入 allowedTools 约束）
       const response = this.options.stream
-        ? await this.callLLMStream(context)
-        : await this.callLLM(context);
+        ? await this.callLLMStream(context, guardianAllowedTools)
+        : await this.callLLM(context, guardianAllowedTools);
       const content = response.content || '';
 
       // 更新 token 使用量
@@ -278,12 +282,23 @@ export class AgentLoop {
         // 检查是否有 dispatch_task 返回（意识体模式下）
         // 不提前返回，让守护意识继续调用 analyze_turn
         const dispatchResult = toolResult.results.find(
-          (r: any) => r.toolCall.name === 'dispatch_task' && r.success
+          (r: any) => r.toolCall.name === 'dispatch_task'
         );
-        if (dispatchResult && dispatchResult.data) {
+        if (dispatchResult && isGuardian) {
           debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, 'dispatch_task returned', {
-            domain: (dispatchResult.data as any).domain
+            domain: dispatchResult.success ? (dispatchResult.data as any)?.domain : 'failed'
           });
+          // dispatch_task 返回后（无论成功失败），下一轮只能调用 analyze_turn
+          guardianAllowedTools = ['analyze_turn'];
+        }
+
+        // 检查是否有 analyze_turn 返回
+        const analyzeResult = toolResult.results.find(
+          (r: any) => r.toolCall.name === 'analyze_turn'
+        );
+        if (analyzeResult && isGuardian) {
+          // analyze_turn 返回后，下一轮不允许任何工具（只能输出文本结束）
+          guardianAllowedTools = [];
         }
 
         // 将助手消息添加到上下文和 conversation（仅当有内容时）
@@ -534,65 +549,98 @@ export class AgentLoop {
   }
 
   /**
-   * 调用 LLM
+   * 调用 LLM（非流式）
    */
-  private async callLLM(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }>; usage?: { input?: number; output?: number; total?: number } }> {
+  private async callLLM(context: AgentContext, allowedTools: string[] | null = null): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }>; usage?: { input?: number; output?: number; total?: number } }> {
     const step: AgentLoopStep = {
       iteration: context.iterations ?? 0,
       phase: 'action'
     };
 
-    try {
-      // DEBUG: 打印发送给 LLM 的消息列表
-      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== CALL LLM DEBUG ===', {
-        messageCount: context.messages.length,
-        messages: context.messages.map((m, i) => ({
-          index: i,
-          role: m.role,
-          contentPreview: m.content.slice(0, 200).replace(/\n/g, '\\n')
-        }))
-      });
+    // 重试配置
+    const maxRetries = 3;
+    const baseDelay = 1000;
+    let lastError: Error | null = null;
 
-      const toolDefinitions = this.options.toolRegistry.list().map(tool => ({
-        name: tool.id,
-        description: tool.description,
-        inputSchema: tool.inputSchema as unknown as Record<string, unknown>
-      }));
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        // DEBUG: 打印发送给 LLM 的消息列表
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== CALL LLM DEBUG ===', {
+          messageCount: context.messages.length,
+          messages: context.messages.map((m, i) => ({
+            index: i,
+            role: m.role,
+            contentPreview: m.content.slice(0, 200).replace(/\n/g, '\\n')
+          }))
+        });
 
-      const response = await this.options.provider.chat({
-        messages: context.messages,
-        tools: toolDefinitions,
-        temperature: this.options.agent.temperature ?? 0.7,
-        maxTokens: this.options.agent.maxTokens ?? 4096
-      });
+        const allTools = this.options.toolRegistry.list();
+        const filteredTools = allowedTools
+          ? allTools.filter(tool => allowedTools.includes(tool.id))
+          : allTools;
+        const toolDefinitions = filteredTools.map(tool => ({
+          name: tool.id,
+          description: tool.description,
+          inputSchema: tool.inputSchema as unknown as Record<string, unknown>
+        }));
 
-      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== LLM RESPONSE DEBUG ===', {
-        contentLength: response.content?.length ?? 0,
-        contentPreview: response.content?.slice(0, 200),
-        toolCallsCount: response.toolCalls?.length ?? 0,
-        toolCalls: response.toolCalls
-      });
+        const response = await this.options.provider.chat({
+          messages: context.messages,
+          tools: toolDefinitions,
+          temperature: this.options.agent.temperature ?? 0.7,
+          maxTokens: this.options.agent.maxTokens ?? 4096
+        });
 
-      // 记录LLM响应到日志
-      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[LLM]', response.content || '(tool calls only)');
-      if (response.toolCalls && response.toolCalls.length > 0) {
-        for (const tc of response.toolCalls) {
-          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL CALL]', `${tc.name}(${JSON.stringify(tc.parameters)})`);
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== LLM RESPONSE DEBUG ===', {
+          contentLength: response.content?.length ?? 0,
+          contentPreview: response.content?.slice(0, 200),
+          toolCallsCount: response.toolCalls?.length ?? 0,
+          toolCalls: response.toolCalls
+        });
+
+        // 记录LLM响应到日志
+        debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[LLM]', response.content || '(tool calls only)');
+        if (response.toolCalls && response.toolCalls.length > 0) {
+          for (const tc of response.toolCalls) {
+            debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL CALL]', `${tc.name}(${JSON.stringify(tc.parameters)})`);
+          }
         }
+
+        step.thinking = response.content;
+        this.addStep(step);
+        this.options.onStep(step);
+
+        return response;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        const errorMessage = lastError.message;
+
+        // 检查是否是 429 或 529 错误
+        const isRetryable = errorMessage.includes('429') || errorMessage.includes('529');
+
+        if (isRetryable && attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt);
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, `LLM request failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms`, {
+            error: errorMessage.slice(0, 200)
+          });
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        debugError(NAMESPACE.AGENT_LOOP, 'LLM call failed', error);
+        step.content = `Error: ${lastError.message}`;
+        this.addStep(step);
+        this.options.onStep(step);
+        return { content: '', toolCalls: undefined };
       }
-
-      step.thinking = response.content;
-      this.addStep(step);
-      this.options.onStep(step);
-
-      return response;
-    } catch (error) {
-      debugError(NAMESPACE.AGENT_LOOP, 'LLM call failed', error);
-      step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
-      this.addStep(step);
-      this.options.onStep(step);
-      return { content: '', toolCalls: undefined };
     }
+
+    // 不应到达这里
+    debugError(NAMESPACE.AGENT_LOOP, 'LLM call failed unexpectedly');
+    step.content = `Error: ${lastError?.message || 'Unknown error'}`;
+    this.addStep(step);
+    this.options.onStep(step);
+    return { content: '', toolCalls: undefined };
   }
 
   /**
@@ -600,7 +648,7 @@ export class AgentLoop {
    *
    * 通过 onStep 逐步发送 text_delta，完整收集所有 tool_calls 后返回。
    */
-  private async callLLMStream(context: AgentContext): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }>; usage?: { input?: number; output?: number; total?: number } }> {
+  private async callLLMStream(context: AgentContext, allowedTools: string[] | null = null): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; parameters: Record<string, unknown> }>; usage?: { input?: number; output?: number; total?: number } }> {
     const streamMethod = this.options.provider.stream;
     if (!streamMethod) {
       // Provider 不支持流式，回退到非流式
@@ -625,7 +673,11 @@ export class AgentLoop {
     });
 
     try {
-      const toolDefinitions = this.options.toolRegistry.list().map(tool => ({
+      const allTools = this.options.toolRegistry.list();
+      const filteredTools = allowedTools
+        ? allTools.filter(tool => allowedTools.includes(tool.id))
+        : allTools;
+      const toolDefinitions = filteredTools.map(tool => ({
         name: tool.id,
         description: tool.description,
         inputSchema: tool.inputSchema as unknown as Record<string, unknown>
@@ -639,63 +691,102 @@ export class AgentLoop {
         verboseStreamLog: this.options.verboseStreamLog
       };
 
-      let fullContent = '';
-      const allToolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }> = [];
-      let streamUsage: { input?: number; output?: number; total?: number } | undefined;
+      // 重试配置
+      const maxRetries = 3;
+      const baseDelay = 1000; // 1秒基础延迟
+      let lastError: Error | null = null;
 
-      const stream = streamMethod.call(this.options.provider, chatOptions);
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          let fullContent = '';
+          const allToolCalls: Array<{ id: string; name: string; parameters: Record<string, unknown> }> = [];
+          let streamUsage: { input?: number; output?: number; total?: number } | undefined;
 
-      for await (const chunk of stream) {
-        // 文本增量 — 通过 onStep 的 text_delta 类型发送
-        if (chunk.delta?.content) {
-          const deltaStep: AgentLoopStep = {
-            iteration: context.iterations ?? 0,
-            phase: 'action',
-            content: chunk.delta.content
+          const stream = streamMethod.call(this.options.provider, chatOptions);
+
+          for await (const chunk of stream) {
+            // 文本增量 — 通过 onStep 的 text_delta 类型发送
+            if (chunk.delta?.content) {
+              const deltaStep: AgentLoopStep = {
+                iteration: context.iterations ?? 0,
+                phase: 'action',
+                content: chunk.delta.content
+              };
+              this.addStep(deltaStep);
+              this.options.onStep(deltaStep);
+              fullContent += chunk.delta.content;
+            }
+
+            // 工具调用 — 完整收集
+            if (chunk.toolCalls) {
+              allToolCalls.push(...chunk.toolCalls);
+            }
+
+            // 收集 usage（通常在最后一个 chunk 中）
+            if (chunk.usage) {
+              streamUsage = chunk.usage;
+            }
+          }
+
+          // 流式结束后，仅内部记录完整内容，不再通过 onStep 重复发送
+          step.thinking = fullContent;
+          this.addStep(step);
+
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== LLM STREAM RESPONSE DEBUG ===', {
+            contentLength: fullContent.length,
+            contentPreview: fullContent.slice(0, 200)?.replace(/\n/g, '\\n'),
+            toolCallsCount: allToolCalls.length,
+            toolCalls: allToolCalls
+          });
+
+          // 记录LLM响应到日志
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[LLM]', fullContent || '(tool calls only)');
+          if (allToolCalls.length > 0) {
+            for (const tc of allToolCalls) {
+              debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL CALL]', `${tc.name}(${JSON.stringify(tc.parameters)})`);
+            }
+          }
+
+          return {
+            content: fullContent,
+            toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
+            usage: streamUsage
           };
-          this.addStep(deltaStep);
-          this.options.onStep(deltaStep);
-          fullContent += chunk.delta.content;
-        }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          const errorMessage = lastError.message;
 
-        // 工具调用 — 完整收集
-        if (chunk.toolCalls) {
-          allToolCalls.push(...chunk.toolCalls);
-        }
+          // 检查是否是 429 或 529 错误
+          const isRetryable = errorMessage.includes('429') || errorMessage.includes('529');
 
-        // 收集 usage（通常在最后一个 chunk 中）
-        if (chunk.usage) {
-          streamUsage = chunk.usage;
+          if (isRetryable && attempt < maxRetries) {
+            const delay = baseDelay * Math.pow(2, attempt); // 指数退避: 1s, 2s, 4s
+            debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, `LLM request failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms`, {
+              error: errorMessage.slice(0, 200)
+            });
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+
+          // 非重试错误或已达最大重试次数
+          debugError(NAMESPACE.AGENT_LOOP, 'LLM stream failed', error);
+          step.content = `Error: ${lastError.message}`;
+          this.addStep(step);
+          this.options.onStep(step);
+          return { content: '', toolCalls: undefined };
         }
       }
 
-      // 流式结束后，仅内部记录完整内容，不再通过 onStep 重复发送
-      step.thinking = fullContent;
+      // 不应到达这里（for loop 正常结束但没有成功）
+      debugError(NAMESPACE.AGENT_LOOP, 'LLM stream failed unexpectedly');
+      step.content = `Error: ${lastError?.message || 'Unknown error'}`;
       this.addStep(step);
-
-      debug(NAMESPACE.AGENT_LOOP, LogLevel.VERBOSE, '=== LLM STREAM RESPONSE DEBUG ===', {
-        contentLength: fullContent.length,
-        contentPreview: fullContent.slice(0, 200)?.replace(/\n/g, '\\n'),
-        toolCallsCount: allToolCalls.length,
-        toolCalls: allToolCalls
-      });
-
-      // 记录LLM响应到日志
-      debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[LLM]', fullContent || '(tool calls only)');
-      if (allToolCalls.length > 0) {
-        for (const tc of allToolCalls) {
-          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL CALL]', `${tc.name}(${JSON.stringify(tc.parameters)})`);
-        }
-      }
-
-      return {
-        content: fullContent,
-        toolCalls: allToolCalls.length > 0 ? allToolCalls : undefined,
-        usage: streamUsage
-      };
-    } catch (error) {
-      debugError(NAMESPACE.AGENT_LOOP, 'LLM stream failed', error);
-      step.content = `Error: ${error instanceof Error ? error.message : String(error)}`;
+      this.options.onStep(step);
+      return { content: '', toolCalls: undefined };
+    } catch (outerError) {
+      // 外层错误（非 429/529 错误）
+      debugError(NAMESPACE.AGENT_LOOP, 'LLM stream failed (outer)', outerError);
+      step.content = `Error: ${outerError instanceof Error ? outerError.message : String(outerError)}`;
       this.addStep(step);
       this.options.onStep(step);
       return { content: '', toolCalls: undefined };
