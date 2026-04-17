@@ -301,11 +301,14 @@ export class AgentLoop {
           guardianAllowedTools = [];
         }
 
-        // 将助手消息添加到上下文和 conversation（仅当有内容时）
-        if (content && content.trim()) {
-          context.messages.push({ role: 'assistant', content });
-          addMessage(conversation, { role: 'assistant', content });
-        }
+        // 将助手消息添加到上下文和 conversation
+        // 必须始终添加，即使 LLM 只输出工具调用没有文本
+        // 否则会出现连续的 user 消息，导致 LLM 丢失自己的工具调用历史而重复执行
+        const assistantContent = content && content.trim()
+          ? content
+          : `[执行工具: ${response.toolCalls!.map(tc => tc.name).join(', ')}]`;
+        context.messages.push({ role: 'assistant', content: assistantContent });
+        addMessage(conversation, { role: 'assistant', content: assistantContent });
 
         // 将工具结果添加到上下文和 conversation
         const MAX_TOOL_RESULT_CHARS = 8000;
