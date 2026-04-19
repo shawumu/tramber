@@ -355,13 +355,11 @@ export class TramberEngine {
             childRegistry.register(globTool);
             childRegistry.register(grepTool);
             childRegistry.register(execTool);
-            // 子意识也注册审批和报告
-            registerVirtualTools(childRegistry, {
-              consciousnessManager: cm,
-              createLoop: () => { throw new Error('Nested child creation not supported'); },
-              currentConsciousnessId: 'child',
-              onPermissionRequired: options.onPermissionRequired
-            }, 'execution');
+            // 子意识也注册审批和报告（用 Object.create 共享父 context，currentSubtaskId 通过原型链传递）
+            const childCtx: VirtualToolContext = Object.create(virtualToolCtx);
+            childCtx.createLoop = () => { throw new Error('Nested child creation not supported'); };
+            childCtx.currentConsciousnessId = 'child';
+            registerVirtualTools(childRegistry, childCtx, 'execution');
 
             return new AgentLoop({
               agent: {

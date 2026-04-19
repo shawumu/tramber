@@ -11,7 +11,7 @@
  * - report_status: 阶段性回报
  * - request_approval: 请求审批
  * - escalate: 领域外请求上升
- * - record_discovery: 记录执行发现和资源
+ * - record_resource: 记录执行发现的资源
  * - recall_resource: 检索资源详情
  * - rebuild_context: 重建 context
  */
@@ -26,7 +26,7 @@ import { ReportStatusTool } from './report-status.js';
 import { EscalateTool } from './escalate.js';
 // Stage 9 新工具
 import { AnalyzeTurnTool } from './analyze-turn.js';
-import { RecordDiscoveryTool } from './record-discovery.js';
+import { RecordResourceTool } from './record-resource.js';
 import { RecallResourceTool } from './recall-resource.js';
 import { RebuildContextTool } from './rebuild-context.js';
 
@@ -39,6 +39,8 @@ export interface VirtualToolContext {
   }) => AgentLoop;
   /** 当前意识体 ID */
   currentConsciousnessId: string;
+  /** 当前 subtask ID（dispatch_task 创建后自动设置，record_resource 自动使用） */
+  currentSubtaskId?: string;
   /** 当前用户请求（Stage 9: 用于自动生成实体） */
   userRequest?: string;
   /** 权限确认回调 */
@@ -66,7 +68,7 @@ export function registerVirtualTools(
   registry.register(new RequestApprovalTool(context));
   registry.register(new EscalateTool(context));
   // Stage 9: 执行意识新增工具
-  registry.register(new RecordDiscoveryTool(context));
+  registry.register(new RecordResourceTool(context));
   registry.register(new RecallResourceTool(context));
   registry.register(new RebuildContextTool(context));
 }
@@ -81,7 +83,7 @@ export function unregisterVirtualTools(registry: ToolRegistry): void {
     'request_approval',
     'report_status',
     'analyze_turn',      // Stage 9 新增
-    'record_discovery',  // Stage 9 新增
+    'record_resource',  // Stage 9 新增
     'recall_resource',   // Stage 9 新增
     'rebuild_context',   // Stage 9 新增
     'escalate'

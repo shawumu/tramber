@@ -175,6 +175,7 @@ export class DispatchTaskTool implements Tool {
           relations: [{ type: 'contains' as RelationType, target: domainTaskEntity.id }]
         });
         currentSubtaskId = subtaskEntity.id;
+        this.context.currentSubtaskId = currentSubtaskId;
 
         // 更新 domain_task 的 subtaskIds
         const existingSubtaskIds = (domainTaskEntity as any).subtaskIds || [];

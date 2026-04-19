@@ -38,7 +38,8 @@ export class ToolRegistryImpl implements ToolRegistry {
       name: tool.name,
       description: tool.description,
       category: tool.category,
-      inputSchema: tool.inputSchema
+      inputSchema: tool.inputSchema,
+      silent: tool.silent
     }));
     debug(NAMESPACE.TOOL_REGISTRY, LogLevel.TRACE, 'Tools listed', { count: tools.length });
     return tools;

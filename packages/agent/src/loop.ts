@@ -101,7 +101,17 @@ interface ToolExecResult {
 }
 
 /** 工具结果格式化（独立函数，便于维护） */
-const MAX_TOOL_RESULT_CHARS = 8000;
+const MAX_TOOL_RESULT_CHARS = 32000;
+
+/** read_file 返回的结构化数据 */
+interface ReadFileResultData {
+  content: string;
+  totalLines: number;
+  totalChars: number;
+  startLine: number;
+  endLine: number;
+  hasMore: boolean;
+}
 
 function formatToolResults(
   results: ToolExecResult[],
@@ -109,6 +119,15 @@ function formatToolResults(
 ): string {
   return results.map(r => {
     if (r.success) {
+      // read_file 结构化数据：直接输出 content 字段（已含行号和元信息）
+      const data = r.data as Record<string, unknown> | undefined;
+      if (data && typeof data === 'object' && typeof data.content === 'string' && 'totalLines' in data) {
+        const fileData = data as unknown as ReadFileResultData;
+        const truncated = fileData.content.length > MAX_TOOL_RESULT_CHARS;
+        const content = fileData.content.slice(0, MAX_TOOL_RESULT_CHARS);
+        return `${r.toolCall.name}:\n${content}${truncated ? '\n... (内容过长被截断，请用 startLine/endLine 分段读取)' : ''}`;
+      }
+
       const dataStr = r.data ? JSON.stringify(r.data) : 'Success';
       return `${r.toolCall.name}: ${dataStr.slice(0, MAX_TOOL_RESULT_CHARS)}${dataStr.length > MAX_TOOL_RESULT_CHARS ? '... (truncated)' : ''}`;
     }
@@ -271,16 +290,42 @@ export class AgentLoop {
           }
         }
 
-        // 添加助手消息（始终添加，避免连续 user 消息）
+        // 分离静默工具和普通工具
+        const nonSilentResults = toolResult.filter(r => {
+          const tool = this.options.toolRegistry.get(r.toolCall.name);
+          return !tool?.silent;
+        });
+        const hasSilentOnly = nonSilentResults.length === 0;
+
+        // 记录所有工具结果到日志（静默工具也记录）
+        for (const r of toolResult) {
+          const logData = r.success
+            ? `${r.toolCall.name}: ${r.data ? JSON.stringify(r.data).slice(0, 500) : 'Success'}`
+            : `${r.toolCall.name}: FAILED - ${r.error}`;
+          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL RESULT]', logData);
+        }
+
+        // 所有静默工具：不喂回结果，始终继续循环（LLM 自然会在无工具调用时结束）
+        if (hasSilentOnly) {
+          const assistantContent = content && content.trim()
+            ? content
+            : '[执行静默工具: ' + toolResult.map(r => r.toolCall.name).join(', ') + ']';
+          context.messages.push({ role: 'assistant', content: assistantContent });
+          addMessage(conversation, { role: 'assistant', content: assistantContent });
+          context.messages.push({ role: 'user', content: '已记录，请继续完成任务并给出总结。' });
+          addMessage(conversation, { role: 'user', content: '已记录，请继续完成任务并给出总结。' });
+          continue;
+        }
+
+        // 混合情况（静默 + 非静默）：只喂回非静默工具的结果
         const assistantContent = content && content.trim()
           ? content
-          : `[执行工具: ${response.toolCalls!.map(tc => tc.name).join(', ')}]`;
+          : `[执行工具: ${nonSilentResults.map(r => r.toolCall.name).join(', ')}]`;
         context.messages.push({ role: 'assistant', content: assistantContent });
         addMessage(conversation, { role: 'assistant', content: assistantContent });
 
-        // 添加工具结果消息
-        const toolResultMsg = `工具执行结果:\n${formatToolResults(toolResult, this.options.toolRegistry)}`;
-        const toolNames = toolResult.map(r => r.toolCall.name);
+        const toolResultMsg = `工具执行结果:\n${formatToolResults(nonSilentResults, this.options.toolRegistry)}`;
+        const toolNames = nonSilentResults.map(r => r.toolCall.name);
         context.messages.push({ role: 'user', content: toolResultMsg });
         addMessage(conversation, { role: 'user', content: toolResultMsg, toolNames });
 

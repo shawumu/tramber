@@ -96,7 +96,7 @@ export function buildExecutionPrompt(
   state: ExecutionContextState,
   toolNames?: string[],
   execContext?: ExecutionContext,
-  currentSubtaskId?: string
+  _currentSubtaskId?: string
 ): string {
   const toolList = toolNames && toolNames.length > 0
     ? toolNames.join('、')
@@ -110,16 +110,6 @@ export function buildExecutionPrompt(
   // Stage 9: 资源索引（如果有）
   const 资源Section = execContext && execContext.资源索引.length > 0
     ? `\n## 资源索引\n可用资源（可通过 recall_resource 获取完整内容）:\n${execContext.资源索引.map(r => `- [${r.id}] ${r.uri}`).join('\n')}`
-    : '';
-
-  // Stage 9: 当前 subtask ID（关键：用于 record_discovery）
-  const subtaskInfo = currentSubtaskId
-    ? `\n## 当前子任务 ID
-**${currentSubtaskId}**
-
-调用 record_discovery 时，必须使用此 ID 作为 subtaskRef 参数。
-示例：record_discovery(subtaskRef="${currentSubtaskId}", resources=[...])
-`
     : '';
 
   return `你是 Tramber 的领域执行意识，领域：${state.domain}。
@@ -137,27 +127,30 @@ export function buildExecutionPrompt(
 ${state.taskDescription}
 ${纲领Section}
 ${资源Section}
-${subtaskInfo}
 
 ## 上下文
 ${state.parentContext || '（无额外上下文）'}
 
-## 规则
-- 专注于领域内的任务，高效完成
-- 重大变更（删除文件、修改关键配置）用 request_approval 请求审批
-- 完成后给出清晰的结果总结
-- 如果发现了有价值的资源，使用 record_discovery 记录（不要空调用）
-  - **重要**：subtaskRef 必须使用当前子任务 ID（上面标注的）
-  - 这确保资源正确关联到子任务，后续可从实体图谱组装 context
-  - **summary 质量要求**：必须包含文件结构概览，让后续意识无需读文件即可理解内容
-    - HTML/前端文件：必须包含 title、techStack、features、structure（代码段概览，如 importmap/script/css 结构）
-    - 配置文件：必须包含 title、purpose、keyFields（核心配置项及当前值）
-    - TypeScript/JS：必须包含 title、exports（导出列表）、dependencies（依赖列表）
-    - 目录扫描：必须包含 title、fileList（子文件/目录名称列表）
-    - 不要只写 features，要让后续意识能判断文件的内部组织
+## 工作方式
+
+按以下顺序执行任务：
+
+1. **判断**：任务是否需要使用工具？
+   - 不需要（简单对话、问候、知识问答）→ 直接回答用户，不要调用任何工具
+   - 需要（读写文件、搜索代码、执行命令）→ 进入步骤 2
+
+2. **执行并记录**：使用工具完成任务
+   - 专注高效，一次调用多个工具比多次单调用更好
+   - 重大变更（删除文件、修改关键配置）用 request_approval 请求审批
+   - 使用 glob 发现文件/目录结构后，用 record_resource 记录发现的目录
+   - 使用 read_file 读取文件内容后，用 record_resource 记录文件
+   - record_resource 传入 resources 数组（每个资源包含 uri、resourceType、summary）
+   - summary 需包含 title、techStack/features、structure
+
+3. **总结**：在最终的纯文本回复中给出清晰的结果总结
 
 ## 工具
-${toolList}、report_status、request_approval、escalate、record_discovery、recall_resource、rebuild_context
+${toolList}、report_status、request_approval、escalate、record_resource、recall_resource、rebuild_context
 `;
 }
 

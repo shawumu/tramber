@@ -25,6 +25,8 @@ export interface Tool {
   inputSchema: ToolInputSchema;
   /** 权限声明（可选）*/
   permission?: ToolPermission;
+  /** 静默工具：执行但不返回结果给 LLM（如 record_resource） */
+  silent?: boolean;
   execute(input: unknown): Promise<ToolResult>;
 }
 
@@ -45,4 +47,6 @@ export interface ToolInfo {
   inputSchema: ToolInputSchema;
   /** 权限声明（可选）*/
   permission?: ToolPermission;
+  /** 静默工具 */
+  silent?: boolean;
 }

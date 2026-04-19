@@ -1,8 +1,8 @@
-// packages/agent/src/virtual-tools/record-discovery.ts
+// packages/agent/src/virtual-tools/record-resource.ts
 /**
- * record_discovery — 执行意识的发现记录工具（Stage 9 重构）
+ * record_resource — 执行意识的资源记录工具（Stage 9 重构）
  *
- * 执行意识每轮执行返回时调用，记录发现的资源：
+ * 执行意识在执行中记录发现的资源：
  * - [r:xxx] 资源实体（带结构化 summary）
  *
  * 支持资源去重：同一 uri 合并到同一实体，version 递增，relations 去重
@@ -21,16 +21,17 @@ interface ResourceInput {
   summary?: ResourceSummary;
 }
 
-export class RecordDiscoveryTool implements Tool {
-  id = 'record_discovery';
-  name = 'record_discovery';
-  description = '记录执行中的发现，生成资源实体。每轮工具调用后调用。同一文件自动去重合并。';
+export class RecordResourceTool implements Tool {
+  id = 'record_resource';
+  name = 'record_resource';
+  description = '记录执行中发现的资源。同一文件自动去重合并。';
   category = 'execution' as const;
   permission = { level: 'safe' as const, operation: 'file_read' as const };
+  silent = true;
   inputSchema = {
     type: 'object' as const,
     properties: {
-      subtaskRef: { type: 'string', description: '关联子任务 ID（如 s:xxx）' },
+      subtaskRef: { type: 'string', description: '关联子任务 ID（自动填充，无需手动指定）' },
       resources: {
         type: 'array',
         items: {
@@ -44,7 +45,7 @@ export class RecordDiscoveryTool implements Tool {
         description: '本轮读取/发现的资源'
       }
     },
-    required: ['subtaskRef']
+    required: ['resources']
   };
 
   private context: VirtualToolContext;
@@ -55,16 +56,15 @@ export class RecordDiscoveryTool implements Tool {
 
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
-      subtaskRef: string;
+      subtaskRef?: string;
       resources?: ResourceInput[];
-      // 兼容旧参数名
       taskRef?: string;
     };
 
-    // 兼容旧参数名
-    const subtaskRef = params.subtaskRef || params.taskRef;
+    // 自动填充 subtaskRef（优先使用参数，fallback 到 context）
+    const subtaskRef = params.subtaskRef || params.taskRef || this.context.currentSubtaskId;
     if (!subtaskRef) {
-      return { success: false, error: 'subtaskRef is required' };
+      return { success: false, error: 'No active subtask context' };
     }
 
     const { consciousnessManager } = this.context;
