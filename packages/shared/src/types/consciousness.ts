@@ -409,7 +409,8 @@ export interface EntityQuery {
 
 /** 执行 Context 组装结果 */
 export interface ExecutionContext {
-  纲领: string;
-  资源索引: Array<{ id: string; uri: string; summary: ResourceSummary }>;
-  最近对话: Array<{ role: string; content: string }>;
+  guideline: string;
+  resourceIndex: Array<{ id: string; uri: string; summary: ResourceSummary }>;
+  recentHistory: Array<{ role: string; content: string }>;
+  resourceContent: Array<{ uri: string; content: string }>;
 }

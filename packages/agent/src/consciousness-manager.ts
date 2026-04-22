@@ -31,6 +31,8 @@ import { generateId, debug, debugError, NAMESPACE, LogLevel } from '@tramber/sha
 import type { MemoryStore } from './memory-store.js';
 import type { ContextStorage } from './context-storage.js';
 import { buildSelfAwarenessPrompt } from './consciousness-prompts.js';
+import { readFile } from 'fs/promises';
+import { resolve } from 'path';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
@@ -511,9 +513,9 @@ export class ConsciousnessManager {
    * 当执行意识收到任务时调用，查询关联实体，组装执行纲领。
    * 用于 dispatch_task 注入 system prompt 和 rebuild_context 重建。
    */
-  assembleExecutionContext(taskId: string, domain: string): ExecutionContext {
+  async assembleExecutionContext(taskId: string, domain: string): Promise<ExecutionContext> {
     if (!taskId) {
-      return { 纲领: '', 资源索引: [], 最近对话: [] };
+      return { guideline: '', resourceIndex: [], recentHistory: [], resourceContent: [] };
     }
 
     // 1. 查找本领域的活跃领域任务
@@ -521,7 +523,7 @@ export class ConsciousnessManager {
     const activeDomainTask = domainTasks.find(dt => (dt as DomainTaskEntity).status === 'active') as DomainTaskEntity | undefined;
 
     if (!activeDomainTask) {
-      return { 纲领: '', 资源索引: [], 最近对话: [] };
+      return { guideline: '', resourceIndex: [], recentHistory: [], resourceContent: [] };
     }
 
     // 2. 查找关联的子任务（按 order 倒序）
@@ -580,7 +582,7 @@ export class ConsciousnessManager {
     }
 
     // 4. 组装执行纲领
-    const 纲领 = `
+    const guideline = `
 ## 领域任务：${activeDomainTask.title}
 状态：${activeDomainTask.status}
 进度摘要：${activeDomainTask.summary}
@@ -595,12 +597,7 @@ ${analyses.map(a => `- [${a.id}] (${a.category}) ${a.content}`).join('\n') || '�
 ${rules.filter(r => r.scope === 'global').map(r => `- [${r.id}] (${r.source}) ${r.content}`).join('\n') || '无'}
 `;
 
-    // 5. 资源索引
-    const 资源索引 = resources.map(r => ({
-      id: r.id,
-      uri: r.uri,
-      summary: r.summary
-    }));
+    // 5. resourceIndex（在步骤 8 中根据 resourceContent 过滤后生成）
 
     debug(NS, LogLevel.BASIC, 'Execution context assembled', {
       taskId,
@@ -612,7 +609,69 @@ ${rules.filter(r => r.scope === 'global').map(r => `- [${r.id}] (${r.source}) ${
       resourceCount: resources.length
     });
 
-    return { 纲领, 资源索引, 最近对话: [] };
+    // 6. Stage 10: 填充recentHistory（从已完成 subtask 的 description + result）
+    const recentHistory: Array<{ role: string; content: string }> = [];
+    const completedSubtasks = subtasks.filter(s => {
+      const status = (s as SubtaskEntity).status;
+      return status === 'completed' || status === 'blocked';
+    });
+    // 取最近 3 个已完成的 subtask
+    const recentCompleted = completedSubtasks.slice(0, 3).reverse(); // 按时间正序
+    for (const sub of recentCompleted) {
+      const subtaskEntity = sub as SubtaskEntity;
+      if (subtaskEntity.description) {
+        recentHistory.push({ role: 'user', content: `[前序子任务] ${subtaskEntity.description}` });
+      }
+      if (subtaskEntity.result) {
+        recentHistory.push({ role: 'assistant', content: subtaskEntity.result });
+      }
+    }
+
+    // 7. Stage 10: 读取小文件到resourceContent（自动附加 <10K 字符的文件）
+    const resourceContent: Array<{ uri: string; content: string }> = [];
+    const MAX_AUTO_ATTACH_CHARS = 10000;
+    const MAX_RESOURCE_ATTACH = 4;
+    let attachCount = 0;
+
+    for (const resource of resources) {
+      if (attachCount >= MAX_RESOURCE_ATTACH) break;
+      const uri = resource.uri;
+      if (!uri || !uri.startsWith('file://')) continue;
+
+      const filePath = uri.replace('file://', '');
+      try {
+        const resolved = resolve(filePath);
+        const content = await readFile(resolved, 'utf-8');
+        if (content.length <= MAX_AUTO_ATTACH_CHARS) {
+          resourceContent.push({ uri, content });
+          attachCount++;
+        }
+      } catch {
+        // 文件不存在或无法读取，跳过
+      }
+    }
+
+    // 8. resourceIndex：当前任务资源 + 全局共享资源（同 URI 去重）
+    const currentUris = new Set(resources.map(r => r.uri));
+
+    // 8.1 查询全局资源（跨会话共享）
+    const globalResources = this.memoryStore.getEntityStore().queryGlobalResources();
+    const globalOnly = globalResources.filter(gr => !currentUris.has(gr.uri));
+
+    const mergedResources: Array<ResourceEntity> = [...resources, ...globalOnly];
+
+    const loadedUris = new Set(resourceContent.map(r => r.uri));
+    const resourceIndex = mergedResources
+      .filter(r => !loadedUris.has(r.uri))
+      .map(r => ({ id: r.id, uri: r.uri, summary: r.summary }));
+
+    debug(NS, LogLevel.BASIC, 'Stage 10 context enriched', {
+      recentHistory条数: recentHistory.length / 2,
+      resourceContent数: resourceContent.length,
+      resourceIndex数: resourceIndex.length
+    });
+
+    return { guideline, resourceIndex, recentHistory, resourceContent };
   }
 
   // === 内部方法 ===

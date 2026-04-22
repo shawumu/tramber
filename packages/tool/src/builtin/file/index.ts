@@ -70,8 +70,11 @@ export const readFileTool: Tool = {
       const totalChars = raw.length;
 
       // 计算实际读取范围
+      const DEFAULT_MAX_LINES = 200;
+      const HARD_MAX_LINES = 1000;
       const s = Math.max(1, Math.min(startLine, totalLines));
-      const e = endLine !== undefined ? Math.min(endLine, totalLines) : totalLines;
+      const requestedEnd = endLine !== undefined ? Math.min(endLine, totalLines) : Math.min(s + DEFAULT_MAX_LINES - 1, totalLines);
+      const e = Math.min(requestedEnd, s + HARD_MAX_LINES - 1);
       const selectedLines = allLines.slice(s - 1, e);
 
       // 带行号格式化
@@ -83,7 +86,9 @@ export const readFileTool: Tool = {
         })
         .join('\n');
 
-      const header = `[文件: ${path}] 共 ${totalLines} 行, ${totalChars} 字符。显示第 ${s}-${e} 行。${e < totalLines ? `（还有 ${totalLines - e} 行未显示，请用 startLine=${e + 1} 继续读取）` : ''}`;
+      const truncated = requestedEnd > e;
+      const hasMore = e < totalLines;
+      const header = `[文件: ${path}] 共 ${totalLines} 行, ${totalChars} 字符。显示第 ${s}-${e} 行。${truncated ? `（请求超出单次上限 ${HARD_MAX_LINES} 行，已截断。请用 startLine=${e + 1} 继续读取）` : hasMore ? `（还有 ${totalLines - e} 行未显示，请用 startLine=${e + 1} 继续读取）` : ''}`;
 
       debug(NAMESPACE.TOOL_FILE, LogLevel.TRACE, 'File read successfully', {
         filePath, totalLines, showing: `${s}-${e}`
@@ -97,7 +102,7 @@ export const readFileTool: Tool = {
           totalChars,
           startLine: s,
           endLine: e,
-          hasMore: e < totalLines
+          hasMore: e < totalLines || truncated
         }
       };
     } catch (error) {

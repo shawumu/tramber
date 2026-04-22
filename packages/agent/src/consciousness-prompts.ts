@@ -80,6 +80,8 @@ ${rulesSection}
 
 ## 工具
 - dispatch_task: 路由用户请求到领域子意识
+  - 当任务与已有资源相关时，通过 attachResources 参数指定要预加载的资源 URI
+  - 这样子意识无需重新读取文件，直接在上下文中看到内容
 - analyze_turn: 生成任务图谱（domain_task/subtask/analysis/rule）
 - recall_memory: 检索历史实体（查询已有领域任务和资源）
 `;
@@ -102,14 +104,21 @@ export function buildExecutionPrompt(
     ? toolNames.join('、')
     : 'read_file、write_file、edit_file、glob、grep、exec';
 
-  // Stage 9: 执行纲领（如果有）
-  const 纲领Section = execContext && execContext.纲领
-    ? `\n## 执行纲领（从实体图谱组装）\n${execContext.纲领}`
+  // Stage 9: guideline（如果有）
+  const guidelineSection = execContext && execContext.guideline
+    ? `\n## 执行纲领（从实体图谱组装）\n${execContext.guideline}`
     : '';
 
-  // Stage 9: 资源索引（如果有）
-  const 资源Section = execContext && execContext.资源索引.length > 0
-    ? `\n## 资源索引\n可用资源（可通过 recall_resource 获取完整内容）:\n${execContext.资源索引.map(r => `- [${r.id}] ${r.uri}`).join('\n')}`
+  // Stage 10: resourceIndex（含 summary，可通过 recall_resource + startLine/endLine 精准读取）
+  const resourceSection = execContext && execContext.resourceIndex.length > 0
+    ? `\n## 可用资源（用 recall_resource(uri, startLine, endLine) 精准读取指定段落）\n${execContext.resourceIndex.map(r => {
+        const s = r.summary as unknown as Record<string, unknown> | undefined;
+        const title = s && typeof s.title === 'string' ? ` — ${s.title}` : '';
+        const structure = s?.structure
+          ? `\n  ${formatStructureTree(s.structure as unknown as StructureNode[])}`
+          : '';
+        return `- [${r.id}] ${r.uri}${title}${structure}`;
+      }).join('\n')}`
     : '';
 
   return `你是 Tramber 的领域执行意识，领域：${state.domain}。
@@ -125,8 +134,8 @@ export function buildExecutionPrompt(
 
 ## 当前任务
 ${state.taskDescription}
-${纲领Section}
-${资源Section}
+${guidelineSection}
+${resourceSection}
 
 ## 上下文
 ${state.parentContext || '（无额外上下文）'}
@@ -145,7 +154,9 @@ ${state.parentContext || '（无额外上下文）'}
    - 使用 glob 发现文件/目录结构后，用 record_resource 记录发现的目录
    - 使用 read_file 读取文件内容后，用 record_resource 记录文件
    - record_resource 传入 resources 数组（每个资源包含 uri、resourceType、summary）
-   - summary 需包含 title、techStack/features、structure
+   - summary.structure 必须是 JSON 数组，每个节点含 name、lines、children?，例如：
+     { structure: [{ name: "HTML", lines: [1,30], children: [{ name: "head/style", lines: [1,25] }, { name: "body", lines: [26,30] }] }, { name: "Script", lines: [31,450], children: [...] }] }
+   - JS/TS 文件同理：列出主要模块/函数/类及行号区间
 
 3. **总结**：在最终的纯文本回复中给出清晰的结果总结
 
@@ -155,6 +166,21 @@ ${toolList}、report_status、request_approval、escalate、record_resource、re
 }
 
 // --- 序列化辅助 ---
+
+interface StructureNode {
+  name: string;
+  lines: [number, number];
+  children?: StructureNode[];
+}
+
+function formatStructureTree(nodes: StructureNode[], indent = 0): string {
+  const prefix = '  '.repeat(indent);
+  return nodes.map(n => {
+    const line = `${prefix}${n.name} (L${n.lines[0]}-${n.lines[1]})`;
+    const childLines = n.children?.length ? '\n' + formatStructureTree(n.children, indent + 1) : '';
+    return line + childLines;
+  }).join('\n');
+}
 
 function serializeDomainState(
   state: SelfAwarenessState,

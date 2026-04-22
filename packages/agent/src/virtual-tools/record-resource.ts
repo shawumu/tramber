@@ -24,7 +24,7 @@ interface ResourceInput {
 export class RecordResourceTool implements Tool {
   id = 'record_resource';
   name = 'record_resource';
-  description = '记录执行中发现的资源。同一文件自动去重合并。';
+  description = '批量记录执行中发现的资源。支持一次传入多个资源，同一 URI 自动去重合并。每次调用只传一次，不要重复调用。';
   category = 'execution' as const;
   permission = { level: 'safe' as const, operation: 'file_read' as const };
   silent = true;
@@ -39,7 +39,24 @@ export class RecordResourceTool implements Tool {
           properties: {
             uri: { type: 'string', description: '资源 URI（file://path）' },
             resourceType: { type: 'string', enum: ['file', 'knowledge', 'api', 'pattern'], description: '资源类型' },
-            summary: { type: 'object', description: '结构化摘要' }
+            summary: {
+              type: 'object',
+              description: `结构化摘要。必须包含 title、structure（JSON 数组，每个节点含 name、lines、children?）。
+例：{ title: "3D海滩", structure: [
+  { name: "HTML", lines: [1, 30], children: [
+    { name: "head/style", lines: [1, 25] },
+    { name: "body", lines: [26, 30] }
+  ]},
+  { name: "Script", lines: [31, 450], children: [
+    { name: "场景初始化", lines: [31, 120], children: [
+      { name: "相机", lines: [31, 65] },
+      { name: "渲染器", lines: [66, 120] }
+    ]},
+    { name: "几何体", lines: [121, 380] },
+    { name: "动画循环", lines: [381, 450] }
+  ]}
+]}`
+            }
           }
         },
         description: '本轮读取/发现的资源'

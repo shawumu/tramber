@@ -1,11 +1,9 @@
 // packages/agent/src/virtual-tools/recall-resource.ts
 /**
- * recall_resource — 执行意识的资源检索工具
+ * recall_resource — 执行意识的资源检索工具（Stage 10 重构）
  *
- * 检索资源详情（文件完整内容），返回给执行意识使用。
- * 与 recall_memory 区分：
- * - recall_memory: 守护意识使用，返回实体摘要
- * - recall_resource: 执行意识使用，返回完整内容
+ * 与 read_file 同构：支持 startLine/endLine 分段读取，
+ * 返回带行号内容 + 文件元信息（totalLines, hasMore 等）。
  */
 
 import type { Tool, ToolResult } from '@tramber/tool';
@@ -13,20 +11,25 @@ import type { VirtualToolContext } from './index.js';
 import type { ResourceEntity } from '@tramber/shared';
 import { debug, NAMESPACE, LogLevel } from '@tramber/shared';
 import { readFileSync, existsSync } from 'fs';
+import { resolve } from 'path';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
+
+const DEFAULT_MAX_LINES = 200;
+const HARD_MAX_LINES = 1000;
 
 export class RecallResourceTool implements Tool {
   id = 'recall_resource';
   name = 'recall_resource';
-  description = '检索资源详情（文件完整内容）。执行意识使用。返回完整内容而非摘要。';
+  description = '检索资源详情（与 read_file 同构，支持 startLine/endLine 分段读取）。传入 uri 获取指定资源，传入 keyword 搜索匹配资源。';
   category = 'execution' as const;
   permission = { level: 'safe' as const, operation: 'file_read' as const };
   inputSchema = {
     type: 'object' as const,
     properties: {
       uri: { type: 'string', description: '资源 URI（file://demos/xxx.html）' },
-      resourceType: { type: 'string', enum: ['file', 'knowledge', 'api', 'pattern'], description: '资源类型' },
+      startLine: { type: 'number', description: '起始行号（从1开始，含）。不传则从第1行开始' },
+      endLine: { type: 'number', description: '结束行号（含）。不传则到文件末尾' },
       keyword: { type: 'string', description: '关键词搜索' }
     },
     required: []
@@ -41,7 +44,8 @@ export class RecallResourceTool implements Tool {
   async execute(input: unknown): Promise<ToolResult> {
     const params = input as {
       uri?: string;
-      resourceType?: 'file' | 'knowledge' | 'api' | 'pattern';
+      startLine?: number;
+      endLine?: number;
       keyword?: string;
     };
 
@@ -55,43 +59,23 @@ export class RecallResourceTool implements Tool {
     try {
       const memoryStore = consciousnessManager.getMemoryStore();
 
-      // 如果提供了 uri，直接查找
       if (params.uri) {
         const resourceEntity = memoryStore.findByUri(taskId, params.uri);
         if (resourceEntity) {
-          // 解析 uri，获取文件内容
-          const content = await this.getResourceContent(resourceEntity);
-          return {
-            success: true,
-            data: {
-              uri: params.uri,
-              content,
-              summary: resourceEntity.summary,
-              id: resourceEntity.id
-            }
-          };
+          return this.formatResourceRead(resourceEntity, params.startLine, params.endLine);
         }
-        // uri 不存在于实体图谱，尝试直接读取
+        // uri 不在图谱，尝试直接读取
         if (params.uri.startsWith('file://')) {
           const filePath = params.uri.replace('file://', '');
-          if (existsSync(filePath)) {
-            const content = readFileSync(filePath, 'utf-8');
-            return {
-              success: true,
-              data: {
-                uri: params.uri,
-                content,
-                summary: null,
-                id: null
-              }
-            };
+          const resolved = resolve(filePath);
+          if (existsSync(resolved)) {
+            return this.formatRawRead(params.uri, resolved, params.startLine, params.endLine);
           }
           return { success: false, error: `File not found: ${filePath}` };
         }
         return { success: false, error: `Resource not found: ${params.uri}` };
       }
 
-      // 如果提供了 keyword，搜索匹配的资源
       if (params.keyword) {
         const entities = memoryStore.queryEntities({
           taskId,
@@ -104,29 +88,18 @@ export class RecallResourceTool implements Tool {
           return { success: false, error: `No resources matching keyword: ${params.keyword}` };
         }
 
-        // 返回匹配的资源列表（包含内容）
-        const results = await Promise.all(
-          entities
-            .filter(e => e.type === 'resource')
-            .map(async (entity) => {
-              const resource = entity as ResourceEntity;
-              const content = await this.getResourceContent(resource);
-              return {
-                uri: resource.uri,
-                content,
-                summary: resource.summary,
-                id: resource.id
-              };
-            })
-        );
+        const results = entities
+          .filter(e => e.type === 'resource')
+          .map(entity => {
+            const resource = entity as ResourceEntity;
+            return {
+              id: resource.id,
+              uri: resource.uri,
+              summary: resource.summary
+            };
+          });
 
-        return {
-          success: true,
-          data: {
-            results,
-            count: results.length
-          }
-        };
+        return { success: true, data: { results, count: results.length } };
       }
 
       return { success: false, error: 'Either uri or keyword is required' };
@@ -139,15 +112,76 @@ export class RecallResourceTool implements Tool {
     }
   }
 
-  private async getResourceContent(entity: ResourceEntity): Promise<string> {
-    if (entity.uri.startsWith('file://')) {
-      const filePath = entity.uri.replace('file://', '');
-      if (existsSync(filePath)) {
-        return readFileSync(filePath, 'utf-8');
-      }
-      return `File not found: ${filePath}`;
+  /** 格式化已记录资源的文件读取（与 read_file 同构） */
+  private formatResourceRead(entity: ResourceEntity, startLine?: number, endLine?: number): ToolResult {
+    if (!entity.uri.startsWith('file://')) {
+      return {
+        success: true,
+        data: {
+          content: `Resource type ${entity.resourceType} content not available for line-based reading`,
+          uri: entity.uri,
+          summary: entity.summary,
+          id: entity.id
+        }
+      };
     }
-    // 其他类型暂不支持
-    return `Resource type ${entity.resourceType} content not available`;
+
+    const filePath = entity.uri.replace('file://', '');
+    const resolved = resolve(filePath);
+    if (!existsSync(resolved)) {
+      return { success: false, error: `File not found: ${filePath}` };
+    }
+
+    const raw = readFileSync(resolved, 'utf-8');
+    return this.formatRawContent(entity.uri, raw, startLine, endLine, entity.summary, entity.id);
+  }
+
+  /** 直接读取未记录的文件（与 read_file 同构） */
+  private formatRawRead(uri: string, resolved: string, startLine?: number, endLine?: number): ToolResult {
+    const raw = readFileSync(resolved, 'utf-8');
+    return this.formatRawContent(uri, raw, startLine, endLine);
+  }
+
+  /** 核心格式化逻辑（与 read_file 完全同构） */
+  private formatRawContent(
+    uri: string,
+    raw: string,
+    startLine?: number,
+    endLine?: number,
+    summary?: unknown,
+    id?: string
+  ): ToolResult {
+    const allLines = raw.split('\n');
+    const totalLines = allLines.length;
+    const totalChars = raw.length;
+
+    const s = Math.max(1, Math.min(startLine ?? 1, totalLines));
+    const requestedEnd = endLine !== undefined ? Math.min(endLine, totalLines) : Math.min(s + DEFAULT_MAX_LINES - 1, totalLines);
+    const e = Math.min(requestedEnd, s + HARD_MAX_LINES - 1);
+    const selectedLines = allLines.slice(s - 1, e);
+
+    const maxLineNumWidth = String(e).length;
+    const numberedContent = selectedLines
+      .map((line, i) => `${String(s + i).padStart(maxLineNumWidth, ' ')} | ${line}`)
+      .join('\n');
+
+    const truncated = requestedEnd > e;
+    const hasMore = e < totalLines;
+    const header = `[资源: ${uri}] 共 ${totalLines} 行, ${totalChars} 字符。显示第 ${s}-${e} 行。${truncated ? `（请求超出单次上限 ${HARD_MAX_LINES} 行，已截断。请用 startLine=${e + 1} 继续读取）` : hasMore ? `（还有 ${totalLines - e} 行未显示，请用 startLine=${e + 1} 继续读取）` : ''}`;
+
+    return {
+      success: true,
+      data: {
+        content: `${header}\n${numberedContent}`,
+        totalLines,
+        totalChars,
+        startLine: s,
+        endLine: e,
+        hasMore: e < totalLines || truncated,
+        uri,
+        summary: summary ?? null,
+        id: id ?? null
+      }
+    };
   }
 }

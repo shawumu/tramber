@@ -14,7 +14,7 @@
  * {rootDir}/{taskId}/entity-counter.json
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type {
   BaseEntity, EntityQuery, EntityType, ResourceEntity, ResourceSummary,
@@ -198,6 +198,36 @@ export class EntityStore {
 
     debug(NS, LogLevel.BASIC, 'Resource merged', { id: existing.id, uri, version: existing.version });
     return existing;
+  }
+
+  /** 跨会话查询全局资源（按 URI 去重） */
+  queryGlobalResources(): ResourceEntity[] {
+    const resourceMap = new Map<string, ResourceEntity>();
+
+    try {
+      const dirs = readdirSync(this.rootDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name.startsWith('conv-'))
+        .map(d => d.name);
+
+      for (const taskId of dirs) {
+        const index = this.loadEntityIndex(taskId);
+        for (const entry of index) {
+          if (entry.type !== 'resource') continue;
+          const entity = this.getEntity(taskId, entry.id);
+          if (!entity || entity.type !== 'resource') continue;
+          const resource = entity as ResourceEntity;
+          // 用 URI 去重，保留最新版本
+          const existing = resourceMap.get(resource.uri);
+          if (!existing || (resource.version && existing.version && resource.version >= existing.version)) {
+            resourceMap.set(resource.uri, resource);
+          }
+        }
+      }
+    } catch (err) {
+      debug(NS, LogLevel.BASIC, 'Failed to query global resources', { error: String(err) });
+    }
+
+    return Array.from(resourceMap.values());
   }
 
   /** 合并关系（去重） */

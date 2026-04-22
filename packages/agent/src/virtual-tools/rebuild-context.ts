@@ -54,7 +54,7 @@ export class RebuildContextTool implements Tool {
       }
 
       // 调用 assembleExecutionContext 重建纲领
-      const execContext = consciousnessManager.assembleExecutionContext(
+      const execContext = await consciousnessManager.assembleExecutionContext(
         currentState.id,
         currentState.domain
       );
@@ -62,14 +62,14 @@ export class RebuildContextTool implements Tool {
       // 返回新纲领（实际的 conversation 修改由 consciousnessManager 完成）
       debug(NS, LogLevel.BASIC, 'Context rebuilt', {
         keepRecent,
-        纲领长度: execContext.纲领.length
+        guidelineLength: execContext.guideline.length
       });
 
       return {
         success: true,
         data: {
-          纲领: execContext.纲领,
-          资源索引: execContext.资源索引,
+          guideline: execContext.guideline,
+          resourceIndex: execContext.resourceIndex,
           keepRecent,
           message: `Context 已重建，保留最近 ${keepRecent} 轮对话。新纲领已注入 system prompt。`
         }

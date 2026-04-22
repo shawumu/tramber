@@ -15,6 +15,8 @@ import { buildExecutionPrompt } from '../consciousness-prompts.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import { createConversation, addMessage } from '../conversation.js';
 import type { Task } from '@tramber/shared';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
@@ -37,20 +39,25 @@ export class DispatchTaskTool implements Tool {
       },
       taskDescription: {
         type: 'string',
-        description: '具体任务描述'
+        description: '任务描述。忠实概括用户请求，不要自行添加额外要求'
       },
       contextForChild: {
         type: 'string',
-        description: '传递给子意识的关键上下文（记忆摘要、用户规则）'
+        description: '传递给子意识的背景信息。只传必要上下文，不要扩展用户意图（如用户说"查看目录"就不要加"说明每个文件用途"）'
       },
       allowedTools: {
         type: 'array',
         description: '允许子意识使用的工具列表',
         items: { type: 'string' }
       },
+      attachResources: {
+        type: 'array',
+        description: '需要预加载给子意识的资源 URI 列表。当任务与已有资源相关时，主动指定以避免子意识重复读取。从已有资源索引中选择。',
+        items: { type: 'string' }
+      },
       maxIterations: {
         type: 'number',
-        description: '最大迭代次数（默认 10）'
+        description: '最大迭代次数（默认 30）'
       }
     },
     required: ['domain', 'taskDescription']
@@ -69,6 +76,7 @@ export class DispatchTaskTool implements Tool {
       taskDescription: string;
       contextForChild?: string;
       allowedTools?: string[];
+      attachResources?: string[];
       maxIterations?: number;
     };
 
@@ -125,7 +133,7 @@ export class DispatchTaskTool implements Tool {
       // 5. 创建子 AgentLoop（子意识的 onStep 将输出直接发给用户）
       const childLoop = createLoop({
         allowedTools: params.allowedTools,
-        maxIterations: params.maxIterations ?? 10
+        maxIterations: params.maxIterations ?? 30
       });
 
       // 6. Stage 9: 组装执行纲领（从实体图谱）
@@ -134,7 +142,7 @@ export class DispatchTaskTool implements Tool {
       let currentSubtaskId: string | undefined;
 
       if (taskId) {
-        execContext = consciousnessManager.assembleExecutionContext(taskId, params.domain);
+        execContext = await consciousnessManager.assembleExecutionContext(taskId, params.domain);
 
         // 6.1 创建 subtask 实体（pending 状态）
         const memoryStore = consciousnessManager.getMemoryStore();
@@ -187,8 +195,8 @@ export class DispatchTaskTool implements Tool {
           domain: params.domain,
           domainTaskId: domainTaskEntity.id,
           subtaskId: currentSubtaskId,
-          纲领长度: execContext.纲领.length,
-          资源数: execContext.资源索引.length
+          纲领长度: execContext.guideline.length,
+          资源数: execContext.resourceIndex.length
         });
       }
 
@@ -201,6 +209,48 @@ export class DispatchTaskTool implements Tool {
         systemPrompt: execPrompt,
         projectInfo: { rootPath: process.cwd(), name: 'project' }
       });
+
+      // 8.1 Stage 10: 注入前序对话和资源为独立 system message
+      if (execContext) {
+        if (execContext.recentHistory.length > 0) {
+          const historyText = execContext.recentHistory
+            .map(m => m.role === 'user' ? `用户: ${m.content.replace('[前序子任务] ', '')}` : `Tramber: ${m.content}`)
+            .join('\n');
+          addMessage(conversation, { role: 'system', content: `## 前序对话（本轮任务之前的历史）\n${historyText}` });
+        }
+      }
+
+      // 8.2 Stage 10: 注入资源（自动附加 + 守护意识指定 attachResources）
+      const attachedResourceParts: string[] = [];
+      // 自动附加的小文件
+      if (execContext && execContext.resourceContent.length > 0) {
+        attachedResourceParts.push(
+          ...execContext.resourceContent.map(r => `### ${r.uri}\n\`\`\`\n${r.content}\n\`\`\``)
+        );
+      }
+      // 守护意识指定的 attachResources
+      if (taskId && params.attachResources && params.attachResources.length > 0) {
+        for (const uri of params.attachResources) {
+          // 跳过已自动附加的
+          if (execContext?.资源内容.some(r => r.uri === uri)) continue;
+          if (!uri.startsWith('file://')) continue;
+          const filePath = uri.replace('file://', '');
+          try {
+            const resolved = resolve(filePath);
+            const content = readFileSync(resolved, 'utf-8');
+            // 限制单个文件最大 20K 字符
+            const trimmed = content.length > 20000 ? content.slice(0, 20000) + '\n... (截断)' : content;
+            attachedResourceParts.push(`### ${uri}\n\`\`\`\n${trimmed}\n\`\`\``);
+          } catch (err) {
+            debug(NS, LogLevel.BASIC, 'attachResource file not found, skipped', {
+              uri, error: err instanceof Error ? err.message : String(err)
+            });
+          }
+        }
+      }
+      if (attachedResourceParts.length > 0) {
+        addMessage(conversation, { role: 'system', content: `## 已加载资源（直接可用，无需再次读取）\n${attachedResourceParts.join('\n')}` });
+      }
 
       // 9. 创建任务
       const task: Task = {

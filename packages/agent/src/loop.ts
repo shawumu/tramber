@@ -305,15 +305,21 @@ export class AgentLoop {
           debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL RESULT]', logData);
         }
 
-        // 所有静默工具：不喂回结果，始终继续循环（LLM 自然会在无工具调用时结束）
+        // 所有静默工具：不喂回详细结果，只告知执行成功，继续循环
         if (hasSilentOnly) {
-          const assistantContent = content && content.trim()
-            ? content
-            : '[执行静默工具: ' + toolResult.map(r => r.toolCall.name).join(', ') + ']';
-          context.messages.push({ role: 'assistant', content: assistantContent });
-          addMessage(conversation, { role: 'assistant', content: assistantContent });
-          context.messages.push({ role: 'user', content: '已记录，请继续完成任务并给出总结。' });
-          addMessage(conversation, { role: 'user', content: '已记录，请继续完成任务并给出总结。' });
+          if (content && content.trim()) {
+            context.messages.push({ role: 'assistant', content });
+            addMessage(conversation, { role: 'assistant', content });
+          }
+          const silentConfirm = toolResult
+            .filter(r => r.success)
+            .map(r => `${r.toolCall.name} 执行成功`)
+            .join('、');
+          const continueMsg = silentConfirm
+            ? `${silentConfirm}。请继续完成任务。`
+            : '请继续完成任务。';
+          context.messages.push({ role: 'user', content: continueMsg });
+          addMessage(conversation, { role: 'user', content: continueMsg });
           continue;
         }
 
