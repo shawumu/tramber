@@ -232,7 +232,7 @@ export class DispatchTaskTool implements Tool {
       if (taskId && params.attachResources && params.attachResources.length > 0) {
         for (const uri of params.attachResources) {
           // 跳过已自动附加的
-          if (execContext?.资源内容.some(r => r.uri === uri)) continue;
+          if (execContext?.resourceContent.some(r => r.uri === uri)) continue;
           if (!uri.startsWith('file://')) continue;
           const filePath = uri.replace('file://', '');
           try {

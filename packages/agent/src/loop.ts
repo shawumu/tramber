@@ -335,14 +335,6 @@ export class AgentLoop {
         context.messages.push({ role: 'user', content: toolResultMsg });
         addMessage(conversation, { role: 'user', content: toolResultMsg, toolNames });
 
-        // 记录工具结果到日志
-        for (const r of toolResult) {
-          const logData = r.success
-            ? `${r.toolCall.name}: ${r.data ? JSON.stringify(r.data).slice(0, 500) : 'Success'}`
-            : `${r.toolCall.name}: FAILED - ${r.error}`;
-          debug(NAMESPACE.AGENT_LOOP, LogLevel.BASIC, '[TOOL RESULT]', logData);
-        }
-
         continue;
       }
 

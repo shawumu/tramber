@@ -169,14 +169,15 @@ ${toolList}、report_status、request_approval、escalate、record_resource、re
 
 interface StructureNode {
   name: string;
-  lines: [number, number];
+  lines: [number, number] | null;
   children?: StructureNode[];
 }
 
 function formatStructureTree(nodes: StructureNode[], indent = 0): string {
   const prefix = '  '.repeat(indent);
   return nodes.map(n => {
-    const line = `${prefix}${n.name} (L${n.lines[0]}-${n.lines[1]})`;
+    const lineInfo = n.lines ? ` (L${n.lines[0]}-${n.lines[1]})` : '';
+    const line = `${prefix}${n.name}${lineInfo}`;
     const childLines = n.children?.length ? '\n' + formatStructureTree(n.children, indent + 1) : '';
     return line + childLines;
   }).join('\n');
