@@ -221,6 +221,64 @@ export class ConsciousnessManager {
     return node.state as ExecutionContextState;
   }
 
+  /**
+   * 在执行意识节点下创建孙意识（资源索引器）
+   * 孙意识的生命周期由 dispatch_task 内部管理
+   */
+  createGrandchild(
+    parentExecId: string,
+    domain: string,
+    taskDescription: string
+  ): ExecutionContextState | null {
+    const parentNode = this.findNode(parentExecId);
+    if (!parentNode) return null;
+
+    const id = generateId('gchild');
+    const state: ExecutionContextState = {
+      id,
+      level: 'execution',
+      status: 'spawning',
+      parentId: parentExecId,
+      domain,
+      domainDescription: '资源索引',
+      isNew: true,
+      taskDescription,
+      constraints: [],
+      allowedTools: ['record_resource'],
+      parentContext: '',
+      maxIterations: 2
+    };
+
+    const node: ConsciousnessNode = {
+      id,
+      agentId: this.agentId,
+      state,
+      children: new Map(),
+      active: true
+    };
+
+    parentNode.children.set(id, node);
+
+    debug(NS, LogLevel.BASIC, 'Grandchild created', { id, parentExecId, domain });
+    return state;
+  }
+
+  /** 完成/清理孙意识 */
+  finalizeGrandchild(grandchildId: string): void {
+    const node = this.findNode(grandchildId);
+    if (!node) return;
+    node.active = false;
+    node.state.status = 'completed';
+
+    // 从父节点中移除
+    const parent = this.findNode((node.state as ExecutionContextState).parentId);
+    if (parent) {
+      parent.children.delete(grandchildId);
+    }
+
+    debug(NS, LogLevel.BASIC, 'Grandchild finalized', { id: grandchildId });
+  }
+
   /** 获取所有领域信息 */
   getDomainList(): Array<{ domain: string; childId: string; status: string }> {
     if (!this.root) return [];
@@ -496,6 +554,11 @@ export class ConsciousnessManager {
     return this.currentTaskId;
   }
 
+  /** 获取 ContextStorage 实例 */
+  getContextStorage(): ContextStorage {
+    return this.contextStorage;
+  }
+
   /** 获取 MemoryStore 实例 */
   getMemoryStore(): MemoryStore {
     return this.memoryStore;
@@ -651,17 +714,9 @@ ${rules.filter(r => r.scope === 'global').map(r => `- [${r.id}] (${r.source}) ${
       }
     }
 
-    // 8. resourceIndex：当前任务资源 + 全局共享资源（同 URI 去重）
-    const currentUris = new Set(resources.map(r => r.uri));
-
-    // 8.1 查询全局资源（跨会话共享）
-    const globalResources = this.memoryStore.getEntityStore().queryGlobalResources();
-    const globalOnly = globalResources.filter(gr => !currentUris.has(gr.uri));
-
-    const mergedResources: Array<ResourceEntity> = [...resources, ...globalOnly];
-
+    // 8. resourceIndex
     const loadedUris = new Set(resourceContent.map(r => r.uri));
-    const resourceIndex = mergedResources
+    const resourceIndex = resources
       .filter(r => !loadedUris.has(r.uri))
       .map(r => ({ id: r.id, uri: r.uri, summary: r.summary }));
 

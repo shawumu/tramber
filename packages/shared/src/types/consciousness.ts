@@ -260,7 +260,7 @@ export type EntityType =
   | 'resource';      // 资源实体
 
 /** 资源子类型 */
-export type ResourceType = 'file' | 'knowledge' | 'api' | 'pattern';
+export type ResourceType = 'file' | 'directory' | 'knowledge' | 'api' | 'pattern';
 
 /** 关系类型 */
 export type RelationType =
@@ -354,8 +354,8 @@ export interface ResourceEntity extends BaseEntity {
   summary: ResourceSummary;
 }
 
-/** 资源摘要 — 按文件类型 */
-export type ResourceSummary = VueSummary | JsTsSummary | JsonSummary | HtmlSummary | MdSummary | GenericSummary;
+/** 资源摘要 — 按资源类型 */
+export type ResourceSummary = VueSummary | JsTsSummary | JsonSummary | HtmlSummary | MdSummary | DirectorySummary | GenericSummary;
 
 /** Vue 文件摘要 */
 export interface VueSummary {
@@ -389,6 +389,13 @@ export interface HtmlSummary {
 export interface MdSummary {
   sections: string[];
   codeBlocks: number;
+}
+
+/** 目录摘要 */
+export interface DirectorySummary {
+  title: string;
+  description: string;
+  items: Array<{ name: string; type: 'file' | 'directory' }>;
 }
 
 /** 通用摘要（其他类型） */

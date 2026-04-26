@@ -10,13 +10,16 @@
 
 import type { Tool, ToolResult } from '@tramber/tool';
 import type { VirtualToolContext } from './index.js';
-import type { ExecutionContext, RelationType } from '@tramber/shared';
-import { buildExecutionPrompt } from '../consciousness-prompts.js';
+import type { ExecutionContext, RelationType, ResourceSummary } from '@tramber/shared';
+import { buildExecutionPrompt, buildResourceIndexerPrompt, buildExistingResourcesMessage, formatStructureTree, StructureNode } from '../consciousness-prompts.js';
 import { debug, debugError, NAMESPACE, LogLevel } from '@tramber/shared';
 import { createConversation, addMessage } from '../conversation.js';
 import type { Task } from '@tramber/shared';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+
+const DEFAULT_MAX_LINES = 200;
+const HARD_MAX_LINES = 1000;
 
 const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
@@ -220,27 +223,59 @@ export class DispatchTaskTool implements Tool {
         }
       }
 
-      // 8.2 Stage 10: 注入资源（自动附加 + 守护意识指定 attachResources）
-      const attachedResourceParts: string[] = [];
-      // 自动附加的小文件
+      // 8.2 Stage 10: 注入资源（两阶段：有实体→概览，无实体→内容+自动创建）
+      const attachedOverviewParts: string[] = [];
+      const attachedContentParts: string[] = [];
+      // 自动附加的小文件（已有内容）
       if (execContext && execContext.resourceContent.length > 0) {
-        attachedResourceParts.push(
+        attachedContentParts.push(
           ...execContext.resourceContent.map(r => `### ${r.uri}\n\`\`\`\n${r.content}\n\`\`\``)
         );
       }
-      // 守护意识指定的 attachResources
+      // 守护意识指定的 attachResources（两阶段注入）
       if (taskId && params.attachResources && params.attachResources.length > 0) {
+        const memoryStore = consciousnessManager.getMemoryStore();
+        const subtaskRef = this.context.currentSubtaskId;
+
         for (const uri of params.attachResources) {
           // 跳过已自动附加的
           if (execContext?.resourceContent.some(r => r.uri === uri)) continue;
           if (!uri.startsWith('file://')) continue;
+
+          // 阶段1：查找已有资源实体 → 注入概览
+          const existing = memoryStore.findByUri(taskId, uri);
+          if (existing) {
+            const summary = existing.summary as unknown as Record<string, unknown> | undefined;
+            const title = summary?.title ? ` — ${summary.title}` : '';
+            const structure = summary?.structure
+              ? `\n  ${formatStructureTree(summary.structure as StructureNode[])}`
+              : '';
+            attachedOverviewParts.push(`- [${existing.id}] ${uri}${title}${structure}`);
+            continue;
+          }
+
+          // 阶段2：无实体 → 读取文件内容（受行数限制）→ 自动创建资源实体
           const filePath = uri.replace('file://', '');
           try {
             const resolved = resolve(filePath);
-            const content = readFileSync(resolved, 'utf-8');
-            // 限制单个文件最大 20K 字符
-            const trimmed = content.length > 20000 ? content.slice(0, 20000) + '\n... (截断)' : content;
-            attachedResourceParts.push(`### ${uri}\n\`\`\`\n${trimmed}\n\`\`\``);
+            const raw = readFileSync(resolved, 'utf-8');
+            const { content: numberedContent, startLine, endLine, totalLines } = applyLineLimits(raw);
+            attachedContentParts.push(`### ${uri}\n共 ${totalLines} 行，显示第 ${startLine}-${endLine} 行\n\`\`\`\n${numberedContent}\n\`\`\``);
+
+            // 自动创建资源实体（基本摘要，执行意识后续会通过 record_resource 更新）
+            if (subtaskRef) {
+              const fileName = filePath.split(/[/\\]/).pop() || filePath;
+              memoryStore.storeEntity(taskId, {
+                type: 'resource',
+                domain: 'execution',
+                content: uri,
+                relations: [{ type: 'produced_by' as RelationType, target: subtaskRef }],
+                uri,
+                resourceType: 'file',
+                summary: { type: 'auto_created', title: fileName, structure: [] } as unknown as ResourceSummary
+              });
+              debug(NS, LogLevel.BASIC, 'Auto-created resource entity', { uri, subtaskRef });
+            }
           } catch (err) {
             debug(NS, LogLevel.BASIC, 'attachResource file not found, skipped', {
               uri, error: err instanceof Error ? err.message : String(err)
@@ -248,8 +283,12 @@ export class DispatchTaskTool implements Tool {
           }
         }
       }
-      if (attachedResourceParts.length > 0) {
-        addMessage(conversation, { role: 'system', content: `## 已加载资源（直接可用，无需再次读取）\n${attachedResourceParts.join('\n')}` });
+      // 注入到 conversation
+      if (attachedContentParts.length > 0) {
+        addMessage(conversation, { role: 'system', content: `## 已加载资源（直接可用，无需再次读取）\n${attachedContentParts.join('\n')}` });
+      }
+      if (attachedOverviewParts.length > 0) {
+        addMessage(conversation, { role: 'system', content: `## 资源概览（已记录，用 recall_resource 按段落读取）\n${attachedOverviewParts.join('\n')}` });
       }
 
       // 9. 创建任务
@@ -263,6 +302,123 @@ export class DispatchTaskTool implements Tool {
       // 10. 执行子 loop
       consciousnessManager.updateStatus(execState.id, 'thinking');
       const result = await childLoop.execute(task, conversation);
+
+      // 10.0 保存执行意识 context
+      if (taskId && currentSubtaskId) {
+        const contextStorage = consciousnessManager.getContextStorage();
+        const execSteps = (result as any).steps as Array<{
+          toolCall?: { name: string; parameters: Record<string, unknown> };
+        }> | undefined;
+        contextStorage.saveRound(taskId, currentSubtaskId, 'execution', {
+          systemPrompt: conversation.systemPrompt,
+          messages: conversation.messages.map(m => ({ role: m.role, content: m.content })),
+          iterations: result.iterations,
+          success: result.success,
+          tokenUsage: result.conversation?.tokenUsage,
+          toolCalls: execSteps?.filter(s => s.toolCall).map(s => ({
+            name: s.toolCall!.name,
+            parameters: s.toolCall!.parameters
+          }))
+        });
+      }
+
+      // 10.1 Phase 2: 执行知识分析孙意识（执行成功且有资源访问时触发）
+      if (result.success && taskId && currentSubtaskId) {
+        const steps = (result as any).steps as Array<{
+          toolCall?: { name: string; parameters: Record<string, unknown> };
+        }> | undefined;
+
+        const accessedResources = this.extractAccessedResources(steps || []);
+
+        if (accessedResources.length > 0) {
+          try {
+            // 创建孙意识节点
+            const grandchildState = consciousnessManager.createGrandchild(
+              execState.id,
+              params.domain,
+              `知识分析: ${accessedResources.map(r => r.uri.replace('file://', '')).join(', ')}`
+            );
+
+            if (grandchildState) {
+              const memoryStore = consciousnessManager.getMemoryStore();
+
+              // 查询当前任务的所有已有资源实体
+              const allResources = memoryStore.queryEntities({ taskId, type: 'resource', limit: 50 });
+              const existingResources = allResources.map(e => ({
+                id: e.id,
+                uri: (e as any).uri || '',
+                summary: (e as any).summary
+              }));
+
+              // 构建知识分析 prompt
+              const indexerPrompt = buildResourceIndexerPrompt();
+
+              // 创建知识分析 loop（静默模式 + 只暴露 record_resource）
+              const indexerLoop = createLoop({
+                maxIterations: 2,
+                silent: true,
+                allowedTools: ['record_resource']
+              });
+              const indexerConversation = createConversation({
+                systemPrompt: indexerPrompt,
+                projectInfo: { rootPath: process.cwd(), name: 'project' }
+              });
+
+              // 注入已有资源列表为独立 system message
+              const existingMsg = buildExistingResourcesMessage(existingResources);
+              if (existingMsg) {
+                addMessage(indexerConversation, { role: 'system', content: existingMsg });
+              }
+
+              // 继承执行意识的 messages（包含已读取的文件内容、目录列表、命令输出）
+              for (const msg of conversation.messages) {
+                addMessage(indexerConversation, { role: msg.role, content: msg.content });
+              }
+
+              // 确保 record_resource 能关联到正确的 subtask
+              this.context.currentSubtaskId = currentSubtaskId;
+
+              // 运行知识分析
+              const indexerTask = {
+                id: grandchildState.id,
+                description: '分析执行知识并记录资源',
+                sceneId: 'execution',
+                isComplete: false
+              };
+
+              const indexerResult = await indexerLoop.execute(indexerTask, indexerConversation);
+
+              // 保存 indexer context
+              if (taskId && currentSubtaskId) {
+                const contextStorage = consciousnessManager.getContextStorage();
+                const indexerSteps = (indexerResult as any).steps as Array<{
+                  toolCall?: { name: string; parameters: Record<string, unknown> };
+                }> | undefined;
+                contextStorage.saveRound(taskId, currentSubtaskId, 'indexer', {
+                  systemPrompt: indexerPrompt,
+                  messages: indexerConversation.messages.map(m => ({ role: m.role, content: m.content })),
+                  iterations: indexerResult.iterations,
+                  success: indexerResult.success,
+                  tokenUsage: indexerResult.conversation?.tokenUsage,
+                  toolCalls: indexerSteps?.filter(s => s.toolCall).map(s => ({
+                    name: s.toolCall!.name,
+                    parameters: s.toolCall!.parameters
+                  }))
+                });
+              }
+
+              consciousnessManager.finalizeGrandchild(grandchildState.id);
+
+              debug(NS, LogLevel.BASIC, 'Resource indexer completed', {
+                resourcesProcessed: accessedResources.length,
+                existingResources: existingResources.length
+              });
+            }
+          } catch (err) {
+            debugError(NS, 'Resource indexer failed (non-fatal)', err);
+          }
+        }
+      }
 
       // 11. 更新状态
       consciousnessManager.updateStatus(
@@ -337,4 +493,80 @@ export class DispatchTaskTool implements Tool {
     const node = this.context.consciousnessManager.findChildByDomain(domain);
     return node !== null && node.active;
   }
+
+  /**
+   * 从 loop steps 中提取已访问的资源（文件、目录、命令）
+   * 只从 toolCall.parameters 提取路径，不依赖 toolResult.data
+   * （文件内容/目录列表/命令输出已在 conversation messages 中，indexer 继承 messages 即可看到）
+   */
+  private extractAccessedResources(steps: Array<{
+    toolCall?: { name: string; parameters: Record<string, unknown> };
+  }>): Array<{ type: 'file' | 'directory' | 'command'; uri: string; detail?: string }> {
+    const seen = new Map<string, { type: 'file' | 'directory' | 'command'; uri: string; detail?: string }>();
+
+    for (const step of steps) {
+      if (!step.toolCall) continue;
+
+      if (step.toolCall.name === 'read_file' || step.toolCall.name === 'recall_resource') {
+        const paramKey = step.toolCall.name === 'read_file' ? 'path' : 'uri';
+        const pathOrUri = step.toolCall.parameters[paramKey] as string;
+        if (!pathOrUri) continue;
+
+        const uri = pathOrUri.startsWith('file://') ? pathOrUri : `file://${pathOrUri}`;
+        if (seen.has(uri)) continue;
+        seen.set(uri, { type: 'file', uri });
+      }
+
+      if (step.toolCall.name === 'glob') {
+        const pattern = step.toolCall.parameters.pattern as string;
+        if (!pattern) continue;
+
+        // 从 glob 模式提取目录路径（如 "demos/*" → "demos"）
+        const dirPath = pattern.replace(/\/?\*\*?.*$/, '').replace(/\/$/, '');
+        if (!dirPath) continue;
+
+        const uri = `file://${dirPath}`;
+        if (seen.has(uri)) continue;
+        seen.set(uri, { type: 'directory', uri, detail: `glob: ${pattern}` });
+      }
+
+      if (step.toolCall.name === 'exec') {
+        const command = step.toolCall.parameters.command as string;
+        if (!command) continue;
+
+        const uri = `cmd://${command.slice(0, 80)}`;
+        if (seen.has(uri)) continue;
+        seen.set(uri, { type: 'command', uri, detail: command });
+      }
+    }
+
+    return Array.from(seen.values());
+  }
+}
+
+// === 辅助函数 ===
+
+/** 应用行数限制并返回带行号的内容（与 recall_resource 同构） */
+function applyLineLimits(raw: string, startLine = 1, endLine?: number): {
+  content: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+} {
+  const allLines = raw.split('\n');
+  const totalLines = allLines.length;
+
+  const s = Math.max(1, Math.min(startLine, totalLines));
+  const requestedEnd = endLine !== undefined
+    ? Math.min(endLine, totalLines)
+    : Math.min(s + DEFAULT_MAX_LINES - 1, totalLines);
+  const e = Math.min(requestedEnd, s + HARD_MAX_LINES - 1);
+  const selectedLines = allLines.slice(s - 1, e);
+
+  const maxLineNumWidth = String(e).length;
+  const numbered = selectedLines
+    .map((line, i) => `${String(s + i).padStart(maxLineNumWidth, ' ')} | ${line}`)
+    .join('\n');
+
+  return { content: numbered, startLine: s, endLine: e, totalLines };
 }

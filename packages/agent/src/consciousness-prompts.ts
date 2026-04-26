@@ -148,32 +148,26 @@ ${state.parentContext || '（无额外上下文）'}
    - 不需要（简单对话、问候、知识问答）→ 直接回答用户，不要调用任何工具
    - 需要（读写文件、搜索代码、执行命令）→ 进入步骤 2
 
-2. **执行并记录**：使用工具完成任务
+2. **执行**：使用工具完成任务
    - 专注高效，一次调用多个工具比多次单调用更好
    - 重大变更（删除文件、修改关键配置）用 request_approval 请求审批
-   - 使用 glob 发现文件/目录结构后，用 record_resource 记录发现的目录
-   - 使用 read_file 读取文件内容后，用 record_resource 记录文件
-   - record_resource 传入 resources 数组（每个资源包含 uri、resourceType、summary）
-   - summary.structure 必须是 JSON 数组，每个节点含 name、lines、children?，例如：
-     { structure: [{ name: "HTML", lines: [1,30], children: [{ name: "head/style", lines: [1,25] }, { name: "body", lines: [26,30] }] }, { name: "Script", lines: [31,450], children: [...] }] }
-   - JS/TS 文件同理：列出主要模块/函数/类及行号区间
 
 3. **总结**：在最终的纯文本回复中给出清晰的结果总结
 
 ## 工具
-${toolList}、report_status、request_approval、escalate、record_resource、recall_resource、rebuild_context
+${toolList}、report_status、request_approval、escalate、recall_resource、rebuild_context
 `;
 }
 
 // --- 序列化辅助 ---
 
-interface StructureNode {
+export interface StructureNode {
   name: string;
   lines: [number, number] | null;
   children?: StructureNode[];
 }
 
-function formatStructureTree(nodes: StructureNode[], indent = 0): string {
+export function formatStructureTree(nodes: StructureNode[], indent = 0): string {
   const prefix = '  '.repeat(indent);
   return nodes.map(n => {
     const lineInfo = n.lines ? ` (L${n.lines[0]}-${n.lines[1]})` : '';
@@ -181,6 +175,35 @@ function formatStructureTree(nodes: StructureNode[], indent = 0): string {
     const childLines = n.children?.length ? '\n' + formatStructureTree(n.children, indent + 1) : '';
     return line + childLines;
   }).join('\n');
+}
+
+/**
+ * 构建守护意识的资源概览 message（独立 system message）
+ */
+export function buildResourceOverviewMessage(resources: Array<{ id: string; uri: string; summary: unknown }>): string | null {
+  if (resources.length === 0) return null;
+
+  const lines = resources.map(r => {
+    const summary = r.summary as Record<string, unknown> | undefined;
+    const title = summary?.title ? ` — ${summary.title}` : '';
+
+    // 文件类型：渲染 structure 树
+    const structure = summary?.structure
+      ? `\n  ${formatStructureTree(summary.structure as unknown as StructureNode[])}`
+      : '';
+
+    // 目录类型：渲染 description + items
+    let dirInfo = '';
+    if (summary?.items) {
+      const items = summary.items as Array<{ name: string; type: string }>;
+      const desc = summary.description ? ` — ${summary.description}` : '';
+      dirInfo = `${desc}\n  子项: ${items.map(i => i.name).join(', ')}`;
+    }
+
+    return `- [${r.id}] ${r.uri}${title}${structure}${dirInfo}`;
+  }).join('\n');
+
+  return `## 已记录资源（用于 dispatch_task 的 attachResources 参数）\n${lines}`;
 }
 
 function serializeDomainState(
@@ -210,4 +233,80 @@ function serializeDomainState(
   return `## 领域状态
 当前活跃：${state.activeDomain ?? '无'}
 ${domainList}`;
+}
+
+/**
+ * 生成资源索引意识的 system prompt（静态部分）
+ *
+ * 孙意识专用：从对话历史中分析执行意识访问的所有资源（文件、目录、命令输出），
+ * 生成结构化摘要并记录为资源实体。
+ * 内容由 conversation messages 承载（继承自执行意识），不需要在 prompt 中重复。
+ */
+export function buildResourceIndexerPrompt(): string {
+  return `你是执行知识分析器。你的任务是从对话历史中发现执行意识访问过的资源，并调用 record_resource 记录。
+
+请严格按照以下步骤执行：
+
+## 步骤一：扫描对话历史，区分两种工具结果
+
+逐条查看对话中的"工具执行结果"，按来源工具分类：
+
+**A 类：read_file 或 recall_resource 的结果**
+→ 这些结果包含文件的完整代码/文本内容（几十到几百行）
+→ 可以看到实际的代码行、函数定义、标签结构等
+
+**B 类：glob 的结果**
+→ 这些结果只包含文件名列表（如 ["a.html", "b.html", "c.html"]）
+→ 不包含任何文件的实际内容
+
+**C 类：exec 的结果**
+→ 这些结果包含命令执行的输出文本
+
+## 步骤二：只为 A 类和 C 类创建资源
+
+**对于 A 类（有文件完整内容的）：**
+- 创建 file 资源，uri 格式 file://路径
+- 从对话中实际展示的代码内容生成 structure（行号必须与对话中的一致）
+- resourceType: "file"
+
+**对于 B 类（只有文件名列表的）：**
+- 只创建一个 directory 资源，uri 格式 file://目录路径
+- 不要为列表中的每个文件名创建 file 资源，因为你没有看过它们的内容
+- resourceType: "directory"
+
+**对于 C 类（命令输出）：**
+- 创建 knowledge 资源
+- resourceType: "knowledge"
+
+## 步骤三：调用 record_resource 一次，传入所有资源
+
+record_resource 参数格式：
+- resources: 数组，每个元素包含 uri、resourceType、summary
+- 已有 id 的资源传入 id 以更新，否则创建新的
+
+file 资源的 summary 格式：
+{ title: "文件名", structure: [{ name: "段落名", lines: [起始行, 结束行], children?: [...] }] }
+
+directory 资源的 summary 格式：
+{ title: "目录名", description: "用途描述", items: [{ name: "文件名", type: "file" }] }
+
+knowledge 资源的 summary 格式：
+{ type: "command_output", title: "命令概括", description: "关键发现" }
+
+## 关键区别（请务必理解）
+- "对话中有 3d-beach.html 的完整 400 行代码" → 创建 file 资源，生成 structure
+- "对话中 glob 返回了 3d-beach.html 这个文件名" → 不创建 file 资源，只把文件名放入 directory 的 items
+- 这两者有本质区别：前者你看过内容，后者你只知道它存在
+
+完成后回复"完成"`;
+}
+
+/**
+ * 生成已有资源列表的 system message（动态部分，注入为独立 message）
+ */
+export function buildExistingResourcesMessage(
+  existingResources: Array<{ id: string; uri: string; summary: unknown }>
+): string | null {
+  if (existingResources.length === 0) return null;
+  return `## 已有资源（不需要重复记录，但可以更新丰富其摘要）\n${existingResources.map(r => `- [${r.id}] ${r.uri}`).join('\n')}`;
 }

@@ -36,6 +36,8 @@ export interface VirtualToolContext {
   createLoop: (options: {
     allowedTools?: string[];
     maxIterations?: number;
+    /** 静默模式：不向用户转发 LLM 输出（孙意识/索引器用） */
+    silent?: boolean;
   }) => AgentLoop;
   /** 当前意识体 ID */
   currentConsciousnessId: string;
@@ -50,27 +52,40 @@ export interface VirtualToolContext {
 }
 
 /**
- * 注册守护意识的虚拟工具
+ * 注册虚拟工具（支持 allowedTools 过滤）
  */
 export function registerVirtualTools(
   registry: ToolRegistry,
   context: VirtualToolContext,
-  level: 'self_awareness' | 'execution'
+  level: 'self_awareness' | 'execution',
+  allowedTools?: string[]
 ): void {
   if (level === 'self_awareness') {
     registry.register(new DispatchTaskTool(context));
     registry.register(new RecallMemoryTool(context));
-    registry.register(new AnalyzeTurnTool(context)); // 替代 compress_and_remember
+    registry.register(new AnalyzeTurnTool(context));
   }
 
-  // 子意识工具
-  registry.register(new ReportStatusTool(context));
-  registry.register(new RequestApprovalTool(context));
-  registry.register(new EscalateTool(context));
-  // Stage 9: 执行意识新增工具
-  registry.register(new RecordResourceTool(context));
-  registry.register(new RecallResourceTool(context));
-  registry.register(new RebuildContextTool(context));
+  // 子意识工具（按 allowedTools 过滤）
+  // record_resource 专属 indexer 孙意识，必须显式指定才注册
+  const tools = [
+    new ReportStatusTool(context),
+    new RequestApprovalTool(context),
+    new EscalateTool(context),
+    new RecallResourceTool(context),
+    new RebuildContextTool(context),
+  ];
+
+  for (const tool of tools) {
+    if (!allowedTools || allowedTools.includes(tool.name)) {
+      registry.register(tool);
+    }
+  }
+
+  // record_resource 仅在显式指定时注册（indexer 孙意识用）
+  if (allowedTools && allowedTools.includes('record_resource')) {
+    registry.register(new RecordResourceTool(context));
+  }
 }
 
 /**

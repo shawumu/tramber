@@ -100,6 +100,51 @@ export class ContextStorage {
   }
 
   /**
+   * 按轮次保存 context（每个 subtask 一个子文件夹）
+   *
+   * 结构：{taskDir}/{subtaskId}/execution.json 或 indexer.json
+   */
+  saveRound(
+    taskId: string,
+    subtaskId: string,
+    phase: 'execution' | 'indexer',
+    data: {
+      systemPrompt: string;
+      messages: Array<{ role: string; content: string }>;
+      iterations: number;
+      success: boolean;
+      tokenUsage?: { input: number; output: number; total: number };
+      toolCalls?: Array<{ name: string; parameters: Record<string, unknown>; result?: unknown }>;
+    }
+  ): string | null {
+    if (!this.enabled) return null;
+
+    try {
+      const taskDir = this.ensureTaskDir(taskId);
+      const safeSubtaskId = this.sanitize(subtaskId);
+      const roundDir = join(taskDir, safeSubtaskId);
+      if (!existsSync(roundDir)) {
+        mkdirSync(roundDir, { recursive: true });
+      }
+
+      const filepath = join(roundDir, `${phase}.json`);
+      writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf-8');
+
+      debug(NS, LogLevel.BASIC, 'Round context saved', {
+        taskId,
+        subtaskId,
+        phase,
+        messageCount: data.messages.length
+      });
+
+      return filepath;
+    } catch (err) {
+      debugError(NS, 'Failed to save round context', err);
+      return null;
+    }
+  }
+
+  /**
    * 获取任务目录下所有快照
    */
   listSnapshots(taskId: string): string[] {

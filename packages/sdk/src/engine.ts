@@ -10,7 +10,7 @@ import { ToolRegistryImpl } from '@tramber/tool';
 import { readFileTool, writeFileTool, editFileTool, globTool, grepTool, execTool } from '@tramber/tool';
 import { AnthropicProvider, providerFactory } from '@tramber/provider';
 import type { AIProvider } from '@tramber/provider';
-import { AgentLoop, type AgentLoopStep, ContextBuffer, ConsciousnessManager, MemoryStore, ContextStorage } from '@tramber/agent';
+import { AgentLoop, type AgentLoopStep, ContextBuffer, ConsciousnessManager, MemoryStore, ContextStorage, buildResourceOverviewMessage } from '@tramber/agent';
 import type { Conversation } from '@tramber/agent';
 import { SceneManager, CODING_SCENE_CONFIG } from '@tramber/scene';
 import { SkillLoader, SkillRegistry, type SkillManifest } from '@tramber/skill';
@@ -349,17 +349,28 @@ export class TramberEngine {
           consciousnessManager: cm,
           createLoop: (childOpts) => {
             const childRegistry = new ToolRegistryImpl();
-            childRegistry.register(readFileTool);
-            childRegistry.register(writeFileTool);
-            childRegistry.register(editFileTool);
-            childRegistry.register(globTool);
-            childRegistry.register(grepTool);
-            childRegistry.register(execTool);
-            // 子意识也注册审批和报告（用 Object.create 共享父 context，currentSubtaskId 通过原型链传递）
+            const allowed = childOpts.allowedTools;
+
+            // 基础工具（按 allowedTools 过滤）
+            const baseTools: Array<[string, any]> = [
+              ['read_file', readFileTool],
+              ['write_file', writeFileTool],
+              ['edit_file', editFileTool],
+              ['glob', globTool],
+              ['grep', grepTool],
+              ['exec', execTool],
+            ];
+            for (const [name, tool] of baseTools) {
+              if (!allowed || allowed.includes(name)) {
+                childRegistry.register(tool);
+              }
+            }
+
+            // 虚拟工具（用 Object.create 共享父 context，currentSubtaskId 通过原型链传递）
             const childCtx: VirtualToolContext = Object.create(virtualToolCtx);
             childCtx.createLoop = () => { throw new Error('Nested child creation not supported'); };
             childCtx.currentConsciousnessId = 'child';
-            registerVirtualTools(childRegistry, childCtx, 'execution');
+            registerVirtualTools(childRegistry, childCtx, 'execution', allowed);
 
             return new AgentLoop({
               agent: {
@@ -379,12 +390,15 @@ export class TramberEngine {
               userSkills: this.userSkillRegistry.getEnabled(),
               contextBuffer: this.contextBuffer,
               // 子意识的输出：转发 LLM 文本（流式 content 和非流式 thinking），不转发工具进度
-              onStep: (step) => {
-                if (!step.toolCall && !step.toolResult) {
-                  const text = step.content || step.thinking;
-                  if (text) onProgress({ type: 'text_delta', content: text });
-                }
-              }
+              // silent 模式下不转发（用于孙意识/索引器）
+              onStep: childOpts.silent
+                ? undefined
+                : (step) => {
+                    if (!step.toolCall && !step.toolResult) {
+                      const text = step.content || step.thinking;
+                      if (text) onProgress({ type: 'text_delta', content: text });
+                    }
+                  }
 
 
             });
@@ -521,6 +535,22 @@ export class TramberEngine {
         }
 
         result.conversation.messages = cleanedMessages;
+
+        // 2.1 注入资源概览为独立 system message（清除旧的，注入新的）
+        result.conversation.messages = result.conversation.messages.filter(m => m.role !== 'system');
+        if (this.currentTaskId) {
+          const allResources = cm.getMemoryStore().queryEntities({
+            taskId: this.currentTaskId,
+            type: 'resource',
+            limit: 50
+          });
+          const resourceOverview = buildResourceOverviewMessage(
+            allResources.map(r => ({ id: r.id, uri: (r as any).uri || r.content, summary: (r as any).summary }))
+          );
+          if (resourceOverview) {
+            result.conversation.messages.unshift({ role: 'system', content: resourceOverview });
+          }
+        }
 
         // 2.5 刷新守护意识 memoryIndex（从实体图谱组装，替代 memory entries）
         const rootState = cm.getRoot();

@@ -17,14 +17,14 @@ const NS = NAMESPACE.CONSCIOUSNESS_MANAGER;
 
 interface ResourceInput {
   uri: string;
-  resourceType: 'file' | 'knowledge' | 'api' | 'pattern';
+  resourceType: 'file' | 'directory' | 'knowledge' | 'api' | 'pattern';
   summary?: ResourceSummary;
 }
 
 export class RecordResourceTool implements Tool {
   id = 'record_resource';
   name = 'record_resource';
-  description = '批量记录执行中发现的资源。支持一次传入多个资源，同一 URI 自动去重合并。每次调用只传一次，不要重复调用。';
+  description = '批量记录执行中发现的资源（文件、目录、命令输出等）。支持一次传入多个资源，同一 URI 自动去重合并。每次调用只传一次，不要重复调用。';
   category = 'execution' as const;
   permission = { level: 'safe' as const, operation: 'file_read' as const };
   silent = true;
@@ -38,7 +38,7 @@ export class RecordResourceTool implements Tool {
           type: 'object',
           properties: {
             uri: { type: 'string', description: '资源 URI（file://path）' },
-            resourceType: { type: 'string', enum: ['file', 'knowledge', 'api', 'pattern'], description: '资源类型' },
+            resourceType: { type: 'string', enum: ['file', 'directory', 'knowledge', 'api', 'pattern'], description: '资源类型' },
             summary: {
               type: 'object',
               description: `结构化摘要。必须包含 title、structure（JSON 数组，每个节点含 name、lines、children?）。
