@@ -652,6 +652,7 @@ export class ConsciousnessManager {
 
 ## 已完成子任务
 ${subtasks.filter(s => (s as SubtaskEntity).status === 'completed').map(s => `- [${s.id}] ${(s as SubtaskEntity).description}`).join('\n') || '无'}
+${subtasks.filter(s => (s as SubtaskEntity).status === 'suspended').length > 0 ? `\n## 挂起任务（等待子任务完成后 resume）\n${subtasks.filter(s => (s as SubtaskEntity).status === 'suspended').map(s => { const entity = s as SubtaskEntity; const leadsTo = entity.relations?.find(r => r.type === 'leads_to'); return `- [${s.id}] ${entity.description}${leadsTo ? ` → 子任务 ${leadsTo.target}` : ''}`; }).join('\n')}` : ''}
 
 ## 关键分析
 ${analyses.map(a => `- [${a.id}] (${a.category}) ${a.content}`).join('\n') || '无'}

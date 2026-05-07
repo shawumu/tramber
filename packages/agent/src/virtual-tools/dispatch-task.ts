@@ -61,6 +61,18 @@ export class DispatchTaskTool implements Tool {
       maxIterations: {
         type: 'number',
         description: '最大迭代次数（默认 30）'
+      },
+      resumeSubtaskId: {
+        type: 'string',
+        description: '要恢复的挂起子任务 ID（守护意识 resume 时使用）'
+      },
+      childResult: {
+        type: 'string',
+        description: '子任务的执行结果（resume 时注入到恢复的子意识上下文中）'
+      },
+      spawnFromSubtaskId: {
+        type: 'string',
+        description: 'spawn 来源子任务 ID（创建 leads_to 关系用）'
       }
     },
     required: ['domain', 'taskDescription']
@@ -81,6 +93,9 @@ export class DispatchTaskTool implements Tool {
       allowedTools?: string[];
       attachResources?: string[];
       maxIterations?: number;
+      resumeSubtaskId?: string;
+      childResult?: string;
+      spawnFromSubtaskId?: string;
     };
 
     if (!params.domain || !params.taskDescription) {
@@ -90,6 +105,11 @@ export class DispatchTaskTool implements Tool {
     const { consciousnessManager, createLoop } = this.context;
 
     try {
+      // 0. Resume 分支：恢复挂起的子任务
+      if (params.resumeSubtaskId) {
+        return await this.handleResume(params, consciousnessManager, createLoop);
+      }
+
       // 1. 查找领域子意识
       let execState = consciousnessManager.getDomainChild(params.domain);
       let isNew = false;
@@ -172,6 +192,14 @@ export class DispatchTaskTool implements Tool {
         }
 
         // 创建 subtask（pending）
+        const relations: Array<{ type: RelationType; target: string }> = [
+          { type: 'contains' as RelationType, target: domainTaskEntity.id }
+        ];
+        // leads_to 关系：当这是从 spawn 派生的子任务时
+        if (params.spawnFromSubtaskId) {
+          relations.push({ type: 'leads_to' as RelationType, target: params.spawnFromSubtaskId });
+        }
+
         const subtaskEntity = memoryStore.storeEntity(taskId, {
           type: 'subtask',
           domain: params.domain,
@@ -183,7 +211,7 @@ export class DispatchTaskTool implements Tool {
           ruleIds: [],
           resourceIds: [],
           requires: [],
-          relations: [{ type: 'contains' as RelationType, target: domainTaskEntity.id }]
+          relations
         });
         currentSubtaskId = subtaskEntity.id;
         this.context.currentSubtaskId = currentSubtaskId;
@@ -301,6 +329,7 @@ export class DispatchTaskTool implements Tool {
 
       // 10. 执行子 loop
       consciousnessManager.updateStatus(execState.id, 'thinking');
+      this.context.currentConversation = conversation;
       const result = await childLoop.execute(task, conversation);
 
       // 10.0 保存执行意识 context
@@ -426,13 +455,30 @@ export class DispatchTaskTool implements Tool {
         result.success ? 'active' : 'failed'
       );
 
-      // 11.1 更新 subtask 状态（result 留空，由 analyze_turn 回填有意义的结果总结）
+      // 11.1 更新 subtask 状态
       if (taskId && currentSubtaskId) {
         const memoryStore = consciousnessManager.getMemoryStore();
-        memoryStore.updateEntity(taskId, currentSubtaskId, {
-          status: result.success ? 'completed' : 'blocked',
-          result: result.success ? '' : result.error
-        });
+        const execSteps = (result as any).steps as Array<{
+          toolCall?: { name: string; parameters: Record<string, unknown> };
+          toolResult?: { success: boolean; data?: unknown };
+        }> | undefined;
+
+        // 检测 spawn_task 调用
+        const spawnStep = execSteps?.find(s =>
+          s.toolCall?.name === 'spawn_task' && s.toolResult?.success
+        );
+
+        if (spawnStep) {
+          // spawn_task 已在工具内部设置了 suspended 状态，这里不做额外更新
+          debug(NS, LogLevel.BASIC, 'Subtask spawned child, keeping suspended status', {
+            subtaskId: currentSubtaskId
+          });
+        } else {
+          memoryStore.updateEntity(taskId, currentSubtaskId, {
+            status: result.success ? 'completed' : 'blocked',
+            result: result.success ? '' : result.error
+          });
+        }
       }
 
       // 12. 压缩结果，记入 memory
@@ -459,8 +505,7 @@ export class DispatchTaskTool implements Tool {
       // 13. 子意识输出已通过子 loop 的 onStep（流式/非流式）直接发给用户
       // 不再通过 onChildStep 重复发送
 
-      // 14. 返回结果给守护意识（守护意识 LLM 调用 analyze_turn 写分析总结）
-      // 包含实际执行内容，避免守护意识因信息缺失而产生幻觉
+      // 14. 返回结果给守护意识
       const childFinalAnswer = result.success ? (result as any).finalAnswer || '' : '';
       const toolCallSummary = result.success
         ? (result as any).steps
@@ -469,16 +514,36 @@ export class DispatchTaskTool implements Tool {
             .join('\n') || ''
         : '';
 
+      // 检测 spawn 信号并透传
+      const allSteps = (result as any).steps as Array<{
+        toolCall?: { name: string; parameters: Record<string, unknown> };
+        toolResult?: { success: boolean; data?: any };
+      }> | undefined;
+      const spawnStep = allSteps?.find(s =>
+        s.toolCall?.name === 'spawn_task' && s.toolResult?.success
+      );
+
+      const returnData: Record<string, unknown> = {
+        domain: params.domain,
+        taskDescription: params.taskDescription,
+        iterations: result.iterations,
+        finalAnswer: childFinalAnswer,
+        toolCallSummary,
+        error: result.success ? undefined : result.error
+      };
+
+      if (spawnStep?.toolResult?.data) {
+        const spawnData = spawnStep.toolResult.data;
+        returnData.spawned = true;
+        returnData.spawnDomain = spawnData.domain;
+        returnData.spawnTaskDescription = spawnData.taskDescription;
+        returnData.spawnContext = spawnData.context;
+        returnData.suspendedSubtaskId = currentSubtaskId;
+      }
+
       return {
         success: result.success,
-        data: {
-          domain: params.domain,
-          taskDescription: params.taskDescription,
-          iterations: result.iterations,
-          finalAnswer: childFinalAnswer,
-          toolCallSummary,
-          error: result.success ? undefined : result.error
-        }
+        data: returnData
       };
     } catch (err) {
       debugError(NS, 'Failed to dispatch task', err);
@@ -492,6 +557,117 @@ export class DispatchTaskTool implements Tool {
   private isChildActive(domain: string): boolean {
     const node = this.context.consciousnessManager.findChildByDomain(domain);
     return node !== null && node.active;
+  }
+
+  /**
+   * Resume 分支：从 suspendedState 恢复挂起的子任务
+   */
+  private async handleResume(
+    params: {
+      domain: string;
+      taskDescription: string;
+      resumeSubtaskId: string;
+      childResult?: string;
+      maxIterations?: number;
+    },
+    consciousnessManager: import('@tramber/agent/src/consciousness-manager.js').ConsciousnessManager,
+    createLoop: (options: { allowedTools?: string[]; maxIterations?: number; silent?: boolean }) => import('@tramber/agent/src/loop.js').AgentLoop
+  ): Promise<ToolResult> {
+    const taskId = consciousnessManager.getTaskId();
+    if (!taskId) {
+      return { success: false, error: 'No active task context' };
+    }
+
+    const memoryStore = consciousnessManager.getMemoryStore();
+    const suspendedEntity = memoryStore.getEntity(taskId, params.resumeSubtaskId);
+    if (!suspendedEntity) {
+      return { success: false, error: `Suspended subtask not found: ${params.resumeSubtaskId}` };
+    }
+
+    const suspendedState = (suspendedEntity as any).suspendedState;
+    if (!suspendedState) {
+      return { success: false, error: `No suspended state for subtask: ${params.resumeSubtaskId}` };
+    }
+
+    debug(NS, LogLevel.BASIC, 'Resuming suspended subtask', {
+      subtaskId: params.resumeSubtaskId,
+      savedMessages: suspendedState.messages.length
+    });
+
+    // 恢复 conversation
+    const conversation = createConversation({
+      systemPrompt: suspendedState.systemPrompt,
+      projectInfo: { rootPath: process.cwd(), name: 'project' }
+    });
+    for (const msg of suspendedState.messages) {
+      addMessage(conversation, { role: msg.role, content: msg.content });
+    }
+
+    // 注入子任务结果
+    if (params.childResult) {
+      addMessage(conversation, {
+        role: 'system',
+        content: `## 子任务完成结果\n${params.childResult}\n\n请基于以上结果继续你的任务。`
+      });
+    }
+
+    // 清除封存状态，更新为 running
+    memoryStore.updateEntity(taskId, params.resumeSubtaskId, {
+      status: 'completed',  // 恢复后直接标记上一阶段完成
+      suspendedState: undefined
+    });
+
+    // 创建新的 subtask 记录 resume 阶段
+    const resumedSubtask = memoryStore.storeEntity(taskId, {
+      type: 'subtask',
+      domain: params.domain,
+      content: `resume: ${params.taskDescription}`,
+      domainTaskId: (suspendedEntity as any).domainTaskId,
+      description: `resume: ${params.taskDescription}`,
+      status: 'pending',
+      analysisIds: [],
+      ruleIds: [],
+      resourceIds: [],
+      requires: [],
+      relations: [{ type: 'contains' as RelationType, target: (suspendedEntity as any).domainTaskId }]
+    });
+    this.context.currentSubtaskId = resumedSubtask.id;
+
+    // 创建子 loop 并执行
+    const childLoop = createLoop({
+      maxIterations: params.maxIterations ?? 30
+    });
+    this.context.currentConversation = conversation;
+
+    const task: Task = {
+      id: params.resumeSubtaskId,
+      description: params.taskDescription,
+      sceneId: 'execution',
+      isComplete: false
+    };
+
+    const result = await childLoop.execute(task, conversation);
+
+    // 更新 resume subtask 状态
+    memoryStore.updateEntity(taskId, resumedSubtask.id, {
+      status: result.success ? 'completed' : 'blocked',
+      result: result.success ? '' : result.error
+    });
+
+    const childFinalAnswer = result.success ? (result as any).finalAnswer || '' : '';
+
+    return {
+      success: result.success,
+      data: {
+        domain: params.domain,
+        taskDescription: params.taskDescription,
+        iterations: result.iterations,
+        finalAnswer: childFinalAnswer,
+        resumed: true,
+        resumedSubtaskId: params.resumeSubtaskId,
+        error: result.success ? undefined : result.error
+      }
+    };
   }
 
   /**

@@ -78,10 +78,23 @@ ${rulesSection}
   - 💡 大多数情况下 rules 可以为空数组或不填
 - summary: 本轮分析总结（一行）
 
+## 任务派生处理
+dispatch_task 返回包含 spawned: true 时：
+1. 调用 analyze_turn 记录当前状态
+2. dispatch_task 到 spawn 指定的领域（使用 spawnDomain, spawnTaskDescription, spawnContext）
+
+dispatch_task 正常完成且返回值中包含 suspendedSubtaskId 时：
+1. 调用 analyze_turn 记录
+2. dispatch_task 恢复挂起任务（resumeSubtaskId, childResult, domain）
+
+dispatch_task 正常完成且无挂起信号时：
+1. 调用 analyze_turn，正常结束
+
 ## 工具
 - dispatch_task: 路由用户请求到领域子意识
   - 当任务与已有资源相关时，通过 attachResources 参数指定要预加载的资源 URI
-  - 这样子意识无需重新读取文件，直接在上下文中看到内容
+  - 派生子任务时使用 spawnFromSubtaskId 参数建立 leads_to 关系
+  - 恢复挂起任务时使用 resumeSubtaskId + childResult 参数
 - analyze_turn: 生成任务图谱（domain_task/subtask/analysis/rule）
 - recall_memory: 检索历史实体（查询已有领域任务和资源）
 `;
@@ -132,6 +145,9 @@ export function buildExecutionPrompt(
 如果用户的请求明显超出你的领域范围（不属于"${state.domainDescription}"），
 使用 escalate 向守护意识报告，守护意识会路由到合适的子意识。
 
+如果执行过程中遇到需要其他领域深度处理的子问题（如编码任务中需要先调研某个第三方库的用法和 API 才能继续编码），使用 spawn_task 派生子任务。当前任务会被挂起，子任务完成后自动恢复你继续工作。
+注意：简单的跨域操作（一条命令能解决的）直接用 exec 完成，不需要 spawn。
+
 ## 当前任务
 ${state.taskDescription}
 ${guidelineSection}
@@ -155,7 +171,7 @@ ${state.parentContext || '（无额外上下文）'}
 3. **总结**：在最终的纯文本回复中给出清晰的结果总结
 
 ## 工具
-${toolList}、report_status、request_approval、escalate、recall_resource、rebuild_context
+${toolList}、report_status、request_approval、escalate、spawn_task、recall_resource、rebuild_context
 `;
 }
 

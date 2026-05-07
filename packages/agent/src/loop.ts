@@ -212,6 +212,9 @@ export class AgentLoop {
     // 守护意识工具约束状态
     let guardianAllowedTools: string[] | null = null;
     const isGuardian = this.options.consciousnessState?.level === 'self_awareness';
+    // spawn 栈：跟踪挂起的子任务，支持深层任务树
+    let spawnStack: Array<{ subtaskId: string; domain: string }> = [];
+    const MAX_SPAWN_DEPTH = 3;
 
     for (let i = startIteration; i < this.options.maxIterations; i++) {
       context.iterations = i + 1;
@@ -283,10 +286,30 @@ export class AgentLoop {
         // 守护意识状态机
         if (isGuardian) {
           if (toolResult.some(r => r.toolCall.name === 'dispatch_task')) {
+            // 从 dispatch_task 返回值中提取 spawn 信息
+            for (const r of toolResult) {
+              if (r.toolCall.name === 'dispatch_task' && r.success && (r as any).data) {
+                const data = (r as any).data as Record<string, unknown>;
+                if (data.spawned && data.suspendedSubtaskId) {
+                  spawnStack.push({
+                    subtaskId: data.suspendedSubtaskId as string,
+                    domain: data.domain as string
+                  });
+                }
+                if (data.resumed && spawnStack.length > 0) {
+                  spawnStack.pop();
+                }
+              }
+            }
             guardianAllowedTools = ['analyze_turn'];
           }
           if (toolResult.some(r => r.toolCall.name === 'analyze_turn')) {
-            guardianAllowedTools = [];
+            // analyze 后根据挂起栈决定是否继续 dispatch
+            if (spawnStack.length > 0 && spawnStack.length < MAX_SPAWN_DEPTH) {
+              guardianAllowedTools = ['dispatch_task'];
+            } else {
+              guardianAllowedTools = [];
+            }
           }
         }
 

@@ -315,12 +315,17 @@ export interface SubtaskEntity extends BaseEntity {
   type: 'subtask';
   domainTaskId: string;     // 所属领域任务 [dt:xxx]
   description: string;      // 本轮具体任务描述
-  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked' | 'suspended';
   analysisIds: string[];    // 关联的分析 [a:xxx, a:yyy]
   ruleIds: string[];        // 关联的规则 [r:xxx]
   resourceIds: string[];    // 发现的资源 [r:xxx]
   requires?: string[];      // 跨轮依赖的资源 ID（用于 context 自组装）
   result?: string;          // 执行结果摘要
+  suspendedState?: {        // spawn_task 时的封存状态
+    messages: Array<{ role: string; content: string }>;
+    systemPrompt: string;
+    spawnReason: string;
+  };
 }
 
 /** 分析实体 — 记录本轮的分析结论 */

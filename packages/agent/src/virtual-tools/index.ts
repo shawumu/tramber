@@ -24,6 +24,7 @@ import { RecallMemoryTool } from './recall-memory.js';
 import { RequestApprovalTool } from './request-approval.js';
 import { ReportStatusTool } from './report-status.js';
 import { EscalateTool } from './escalate.js';
+import { SpawnTaskTool } from './spawn-task.js';
 // Stage 9 新工具
 import { AnalyzeTurnTool } from './analyze-turn.js';
 import { RecordResourceTool } from './record-resource.js';
@@ -49,6 +50,8 @@ export interface VirtualToolContext {
   onPermissionRequired?: (toolCall: { id: string; name: string; parameters: Record<string, unknown> }, operation: string, reason?: string) => Promise<boolean>;
   /** 子意识输出直接发给用户的回调（不经过守护意识 conversation） */
   onChildStep?: (step: AgentLoopStep) => void;
+  /** 当前执行意识的 conversation（spawn_task 用于保存封存状态） */
+  currentConversation?: { messages: Array<{ role: string; content: string }>; systemPrompt: string };
 }
 
 /**
@@ -72,6 +75,7 @@ export function registerVirtualTools(
     new ReportStatusTool(context),
     new RequestApprovalTool(context),
     new EscalateTool(context),
+    new SpawnTaskTool(context),
     new RecallResourceTool(context),
     new RebuildContextTool(context),
   ];
@@ -101,7 +105,8 @@ export function unregisterVirtualTools(registry: ToolRegistry): void {
     'record_resource',  // Stage 9 新增
     'recall_resource',   // Stage 9 新增
     'rebuild_context',   // Stage 9 新增
-    'escalate'
+    'escalate',
+    'spawn_task'        // Stage 10B 新增
   ];
   for (const id of virtualToolIds) {
     registry.unregister(id);
